@@ -14,9 +14,12 @@ dataset_num_proc: 48
 max_length: 32768
 weight_decay: 0.0001
 optim: adamw_torch
-lr_scheduler_type: linear
-warmup_ratio: 0.1
-learning_rate: 3.0e-05
+lr_scheduler_type: cosine_with_min_lr
+lr_scheduler_kwargs:
+  min_lr_rate: 0.1
+max_grad_norm: 0.2
+warmup_ratio: 0.03
+learning_rate: 1.0e-05
 gradient_accumulation_steps: 8
 per_device_eval_batch_size: 4
 per_device_train_batch_size: 4 # Change this depending on the context length of the model to keep a 500M GBS. 
@@ -25,7 +28,7 @@ single_gpu: true
 
 # SFT trainer config
 max_steps: -1
-num_train_epochs: 6
+num_train_epochs: 1
 bf16: true
 do_eval: false
 eval_strategy: 'no'
