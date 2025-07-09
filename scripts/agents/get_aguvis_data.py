@@ -11,18 +11,12 @@ import shutil
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Generator, Callable
-
 from tqdm import tqdm
 from datasets import Dataset, load_dataset
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, login, snapshot_download
 from PIL import Image
-from huggingface_hub import upload_large_folder
 
-from smolagents.models import get_clean_message_list
-from datasets import load_dataset
-from dotenv import load_dotenv
-import os
 
 api = HfApi()
 
@@ -115,7 +109,7 @@ The state persists between code executions: so if in one step you've created var
 """
 
 
-
+# TODO: some of the mappings above must be wrong because the conversion fails for some subsets
 config_dict = [{
     "json_path": "mind2web-l1.json",
     "images_folder": "mind2web/",
@@ -178,6 +172,17 @@ config_dict = [{
         "sampling_strategy": "all"
     },
 ]
+
+
+
+def authenticate_huggingface():
+    """Authenticate with HuggingFace Hub using token."""
+    hf_token = os.getenv("HF_TOKEN")
+    if hf_token:
+        print("Authenticating with HuggingFace Hub using token...")
+        login(token=hf_token)
+    else:
+        raise ValueError("HF_TOKEN environment variable not set.")
 
 
 def discover_dataset_config(dataset_path: str) -> List[Dict[str, Any]]:
@@ -410,25 +415,14 @@ def process_subset(config: Dict[str, Any], dataset_path: str, destination_path: 
                 texts = convert_to_chat_format(item)
 
                 entry = {"images": images, "texts": texts}
-                entry = convert_to_screenenv(entry)
+                entry = convert_row_to_screenenv(entry)
                 yield entry
             except Exception as e:
                 print(f"Error processing item: {e}", item)
                 continue
     return process_items
 
-
-def authenticate_huggingface():
-    """Authenticate with HuggingFace Hub using token."""
-    hf_token = os.getenv("HF_TOKEN")
-    if hf_token:
-        print("Authenticating with HuggingFace Hub using token...")
-        login(token=hf_token)
-    else:
-        raise ValueError("HF_TOKEN environment variable not set.")
-
-
-def convert_to_screenenv(example):
+def convert_row_to_screenenv(example: dict[str, Image.Image | list[dict[str, Any]]]) -> dict[str, Image.Image | list[dict[str, Any]]]:
     """
     Converts the dataset to the action space defined in ScreenEnv: https://github.com/huggingface/screenenv/blob/f8fb60d4e805e4c139f39855c04263f81e82155f/examples/desktop_agent.py#L114
     Also, converts the action space to absolute coordinates for qwen models.
@@ -496,7 +490,7 @@ test_sample = {
     ]
 }
 
-test_output = convert_to_screenenv(test_sample)
+test_output = convert_row_to_screenenv(test_sample)
 assert test_output["texts"][1]["content"] == "click(x=50, y=50)\ndouble_click(x=50, y=60)", test_output["texts"][1]["content"]
 assert test_output["texts"][2]["content"] == "scroll(direction='down', amount=0.33)\nscroll(direction='up', amount=0.33)", test_output["texts"][2]["content"]
 assert test_output["texts"][3]["content"] == "<code>\nfinal_answer(The answer is 12)\n</code>", test_output["texts"][3]["content"]
