@@ -389,14 +389,6 @@ def process_subset(config: Dict[str, Any], dataset_path: str, destination_path: 
             data.extend(file_data)
             print(f"  Added {len(file_data)} items")
 
-    def get_images_total_weight(images_folder: Path, image_paths: list) -> int:
-        try:
-            return sum(os.path.getsize(images_folder / img_path) for img_path in image_paths)
-        except Exception as e:
-            print(f"Error getting image weight: {e}", images_folder, image_paths)
-            return 0
-
-
     def process_items() -> Generator[Dict[str, Any], None, None]:
         pbar = tqdm(data)
         for item in pbar:
@@ -418,6 +410,7 @@ def process_subset(config: Dict[str, Any], dataset_path: str, destination_path: 
                 texts = convert_to_chat_format(item)
 
                 entry = {"images": images, "texts": texts}
+                entry = convert_to_screenenv(entry)
                 yield entry
             except Exception as e:
                 print(f"Error processing item: {e}", item)
@@ -435,10 +428,13 @@ def authenticate_huggingface():
         raise ValueError("HF_TOKEN environment variable not set.")
 
 
-def change_coordinates(example):
-    """Follows the action space defined in ScreenEnv: https://github.com/huggingface/screenenv/blob/f8fb60d4e805e4c139f39855c04263f81e82155f/examples/desktop_agent.py#L114"""
-    example["texts"][0]["content"] = SYSTEM_PROMPT
-    for message in example["texts"]:
+def convert_to_screenenv(example):
+    """
+    Converts the dataset to the action space defined in ScreenEnv: https://github.com/huggingface/screenenv/blob/f8fb60d4e805e4c139f39855c04263f81e82155f/examples/desktop_agent.py#L114
+    Also, converts the action space to absolute coordinates for qwen models.
+    """
+    # example["texts"][0]["content"] = SYSTEM_PROMPT
+    for i, message in enumerate(example["texts"]):
         if message["role"] == "assistant":
             if "click(" in message["content"] or "right_click(" in message["content"] or "double_click(" in message["content"]:
                 # Regex that detects to consecutive floats between parentheses, also preceded by OPTIONAL x= and y=, like (x=1.0, y=2.028) or (1.0, 2.028)
@@ -457,10 +453,10 @@ def change_coordinates(example):
                 pattern = r"scroll\((?:page=)?(-?\d+\.\d+)\)"
                 matches = re.finditer(pattern, message["content"])
                 for match in matches:
-                    if float(match.group(1)) > 0:
-                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='up', amount={float(match.group(1))})")
+                    if float(match.group(1)) < 0:
+                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='up', amount={-1*float(match.group(1))})")
                     else:
-                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='down', amount={-1*float(match.group(1))})")
+                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='down', amount={float(match.group(1))})")
 
             if "write(" in message["content"]:
                 # Replace "write(message=...)" with "write(text=...)"
@@ -469,6 +465,11 @@ def change_coordinates(example):
             if "press(" in message["content"]:
                 message["content"] = message["content"].replace("press(keys=", "press(key=")
 
+            if i == len(example["texts"]) - 1 and not any(action in message["content"] for action in ["click", "right_click", "double_click", "scroll", "write", "press"]):
+                # If no action is detected in the final assistant message, wrap the message in a final_answer call
+                message_content = message["content"]
+                message_content = message_content.replace("<code>", "").replace("</code>", "").strip()
+                message["content"] = f"<code>\nfinal_answer({message_content})\n</code>"
     return example
 
 test_sample = {
@@ -483,21 +484,25 @@ test_sample = {
         },
         {
             "role": "assistant",
-            "content": "scroll(page=-0.33)\nscroll(page=0.33)"
+            "content": "scroll(page=0.33)\nscroll(page=-0.33)"
+        },
+        {
+            "role": "assistant",
+            "content": "<code>\nThe answer is 12\n</code>"
         },
     ],
     "images": [
         Image.new("RGB", (100, 100))
     ]
 }
-    
-test_output = change_coordinates(test_sample)
-assert test_output["texts"][0]["content"] == SYSTEM_PROMPT, test_output["texts"][0]["content"]
+
+test_output = convert_to_screenenv(test_sample)
 assert test_output["texts"][1]["content"] == "click(x=50, y=50)\ndouble_click(x=50, y=60)", test_output["texts"][1]["content"]
 assert test_output["texts"][2]["content"] == "scroll(direction='down', amount=0.33)\nscroll(direction='up', amount=0.33)", test_output["texts"][2]["content"]
+assert test_output["texts"][3]["content"] == "<code>\nfinal_answer(The answer is 12)\n</code>", test_output["texts"][3]["content"]
 
 
-def convert_to_smolagentss():
+def make_dataset_from_original_data():
     """Main function to orchestrate the entire process."""
     load_dotenv(override=True)
 
@@ -554,10 +559,11 @@ def convert_to_smolagentss():
 
 
 if __name__ == "__main__":
-    for subset in ['guiact-web-multi', 'guiact-web-single', 'mind2web']:
-        dataset = load_dataset("smolagents/aguvis-stage-2", subset, split="train")
-        print(dataset)
+    # for subset in ['guiact-web-single', 'mind2web']:
+    #     dataset = load_dataset("smolagents/aguvis-stage-2", subset, split="train", revision="cc2441320a990e930d20732d6375ee2f026d6d19")
+    #     print(dataset)
 
-        dataset = dataset.map(change_coordinates, num_proc=64)
+    #     dataset = dataset.map(change_coordinates, num_proc=32)
 
-        dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
+    #     dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
+    make_dataset_from_original_data()
