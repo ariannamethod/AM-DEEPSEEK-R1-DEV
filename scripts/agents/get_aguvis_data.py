@@ -3,7 +3,7 @@
 Script to download, process, and upload the aguvis-stage2 dataset.
 Downloads from huggingface.co/datasets/xlangai/aguvis-stage2 and uploads to smolagents/aguvis-stage-2
 """
-
+import re
 import gc
 import json
 import os
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Generator, Callable
 
 from tqdm import tqdm
-from datasets import Dataset
+from datasets import Dataset, load_dataset
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, login, snapshot_download
 from PIL import Image
@@ -63,7 +63,7 @@ def double_click(x: int, y: int) -> str:
         y: The y coordinate (vertical position)
     \"\"\"
 
-def type_text(text: str) -> str:
+def write(text: str) -> str:
     \"\"\"
     Types the specified text at the current cursor position.
     Args:
@@ -93,12 +93,12 @@ def drag_and_drop(x1: int, y1: int, x2: int, y2: int) -> str:
         y2: end y coordinate
     \"\"\"
 
-def scroll(x: int, y: int, direction: Literal["up", "down"] = "down", amount: int = 2) -> str:
+def scroll(x: int = None, y: int = None, direction: Literal["up", "down"] = "down", amount: int = 2) -> str:
     \"\"\"
     Moves the mouse to selected coordinates, then uses the scroll button: this could scroll the page or zoom, depending on the app. DO NOT use scroll to move through linux desktop menus.
     Args:
-        x: The x coordinate (horizontal position) of the element to scroll/zoom
-        y: The y coordinate (vertical position) of the element to scroll/zoom
+        x: The x coordinate (horizontal position) of the element to scroll/zoom, defaults to None to not focus on specific coordinates
+        y: The y coordinate (vertical position) of the element to scroll/zoom, defaults to None to not focus on specific coordinates
         direction: The direction to scroll ("up" or "down"), defaults to "down". For zoom, "up" zooms in, "down" zooms out.
         amount: The amount to scroll. A good amount is 1 or 2.
     \"\"\"
@@ -435,7 +435,69 @@ def authenticate_huggingface():
         raise ValueError("HF_TOKEN environment variable not set.")
 
 
-def main():
+def change_coordinates(example):
+    """Follows the action space defined in ScreenEnv: https://github.com/huggingface/screenenv/blob/f8fb60d4e805e4c139f39855c04263f81e82155f/examples/desktop_agent.py#L114"""
+    example["texts"][0]["content"] = SYSTEM_PROMPT
+    for message in example["texts"]:
+        if message["role"] == "assistant":
+            if "click(" in message["content"] or "right_click(" in message["content"] or "double_click(" in message["content"]:
+                # Regex that detects to consecutive floats between parentheses, also preceded by OPTIONAL x= and y=, like (x=1.0, y=2.028) or (1.0, 2.028)
+                pattern = r"(click|right_click|double_click)\((?:x=)?(\d+\.\d+), (?:y=)?(\d+\.\d+)\)"
+                matches = re.finditer(pattern, message["content"])
+                for match in matches:
+                    name, x, y = match.groups()
+                    assert x is not None and y is not None
+                    image_size = example["images"][0].size
+                    x_absolute = round(float(x) * image_size[0])
+                    y_absolute = round(float(y) * image_size[1])
+                    message["content"] = message["content"].replace(match.group(0), f"{name}(x={x_absolute}, y={y_absolute})")
+
+            if "scroll(" in message["content"]:
+                # Convert scroll(page=-0.33) to scroll(direction="down", amount=0.33)
+                pattern = r"scroll\((?:page=)?(-?\d+\.\d+)\)"
+                matches = re.finditer(pattern, message["content"])
+                for match in matches:
+                    if float(match.group(1)) > 0:
+                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='up', amount={float(match.group(1))})")
+                    else:
+                        message["content"] = message["content"].replace(match.group(0), f"scroll(direction='down', amount={-1*float(match.group(1))})")
+
+            if "write(" in message["content"]:
+                # Replace "write(message=...)" with "write(text=...)"
+                message["content"] = message["content"].replace("write(message=", "write(text=")
+
+            if "press(" in message["content"]:
+                message["content"] = message["content"].replace("press(keys=", "press(key=")
+
+    return example
+
+test_sample = {
+    "texts": [
+        {
+            "role": "system", # Should not be changed
+            "content": "click(x=0.5, y=0.5)"
+        },
+        {
+            "role": "assistant",
+            "content": "click(x=0.5, y=0.5)\ndouble_click(x=0.5, y=0.597814)"
+        },
+        {
+            "role": "assistant",
+            "content": "scroll(page=-0.33)\nscroll(page=0.33)"
+        },
+    ],
+    "images": [
+        Image.new("RGB", (100, 100))
+    ]
+}
+    
+test_output = change_coordinates(test_sample)
+assert test_output["texts"][0]["content"] == SYSTEM_PROMPT, test_output["texts"][0]["content"]
+assert test_output["texts"][1]["content"] == "click(x=50, y=50)\ndouble_click(x=50, y=60)", test_output["texts"][1]["content"]
+assert test_output["texts"][2]["content"] == "scroll(direction='down', amount=0.33)\nscroll(direction='up', amount=0.33)", test_output["texts"][2]["content"]
+
+
+def convert_to_smolagentss():
     """Main function to orchestrate the entire process."""
     load_dotenv(override=True)
 
@@ -490,5 +552,12 @@ def main():
     print("All done!")
 
 
+
 if __name__ == "__main__":
-    main()
+    for subset in ['guiact-web-multi', 'guiact-web-single', 'mind2web']:
+        dataset = load_dataset("smolagents/aguvis-stage-2", subset, split="train")
+        print(dataset)
+
+        dataset = dataset.map(change_coordinates, num_proc=64)
+
+        dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
