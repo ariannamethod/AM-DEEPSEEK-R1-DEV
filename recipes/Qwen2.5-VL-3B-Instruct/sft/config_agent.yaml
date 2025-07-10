@@ -12,7 +12,6 @@ dataset_num_proc: 48
 
 #SFT hyperparam
 max_length: 32768
-weight_decay: 0.0001
 optim: adamw_torch
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs:
