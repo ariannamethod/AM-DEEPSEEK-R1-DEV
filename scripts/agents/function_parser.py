@@ -7,7 +7,7 @@ Supports both mobile and pyautogui function patterns.
 import re
 from typing import Dict, List, Tuple, Any, Union
 from dataclasses import dataclass
-
+from collections import OrderedDict
 
 @dataclass
 class FunctionCall:
@@ -125,14 +125,15 @@ def parse_function_call(function_string: str, pattern_to_match: list[str] = []) 
     
     matches = re.findall(pattern, function_string)
     if not matches:
-        raise ValueError(f"No valid function calls found in: {function_string}")
+        # No valid function calls found in: {function_string}
+        return []
     
     results = []
     for match in matches:
         function_name = match[0]
         params_string = match[1]
         
-        if pattern_to_match and any(pattern not in function_name for pattern in pattern_to_match):
+        if pattern_to_match and all(pattern not in function_name for pattern in pattern_to_match):
             continue
         
         # Parse parameters
@@ -179,7 +180,7 @@ def parse_parameters(params_string: str) -> Dict[str, Any]:
     if not params_string.strip():
         return {}
     
-    parameters = {}
+    parameters = OrderedDict()
     
     # Split by commas, but be careful with commas inside quotes or brackets
     param_parts = split_parameters(params_string)

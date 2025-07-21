@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Generator, Callable, Literal
 from tqdm import tqdm
@@ -19,10 +20,10 @@ from huggingface_hub import HfApi, login, snapshot_download
 from collections import defaultdict
 from PIL import Image
 import tarfile
-from .prompts import OS_SYSTEM_PROMPT, MOBILE_SYSTEM_PROMPT
-from .models import ConversationDataList, ConversationData, ChatMessage, DataRow
-from .function_parser import parse_function_call
-from .action_conversion import action_conversion
+from prompts import OS_SYSTEM_PROMPT, MOBILE_SYSTEM_PROMPT
+from models import ConversationDataList, ConversationData, ChatMessage, DataRow
+from function_parser import parse_function_call
+from action_conversion import action_conversion
 
 
 api = HfApi()
@@ -54,7 +55,7 @@ config_dict = [
     #     "sampling_strategy": "all",
     # },
     {
-        "json_path": "mind2web-l2.json",
+        "json_path": "mind2web-l3.json",
         "images_folder": "mind2web/",
         "sampling_strategy": "all",
     },
@@ -69,7 +70,7 @@ config_dict = [
     #     "sampling_strategy": "all",
     # },
     {
-        "json_path": "guiact-web-multi-l2.json",
+        "json_path": "guiact-web-multi-l3.json",
         "images_folder": "guiact-web-multi-v2/images",
         "sampling_strategy": "all",
     },
@@ -79,7 +80,7 @@ config_dict = [
     #     "sampling_strategy": "all",
     # },
     {
-        "json_path": "miniwob-l2.json",
+        "json_path": "miniwob-l3.json",
         "images_folder": "images",
         "sampling_strategy": "all",
     },
@@ -104,7 +105,7 @@ config_dict = [
     #     "sampling_strategy": "random:33%",
     # },
     {
-        "json_path": "gui-odyssey-l2.json",
+        "json_path": "gui-odyssey-l3.json",
         "images_folder": "gui-odyssey/images/",
         "sampling_strategy": "random:33%",
     },
@@ -119,7 +120,7 @@ config_dict = [
     #     "sampling_strategy": "random:33%",
     # },
     {
-        "json_path": "amex-l2.json",
+        "json_path": "amex-l3.json",
         "images_folder": "amex/images/",
         "sampling_strategy": "random:33%",
     },
@@ -129,7 +130,7 @@ config_dict = [
     #     "sampling_strategy": "all",
     # },
     {
-        "json_path": "aitw-l2.json",
+        "json_path": "aitw-l3.json",
         "images_folder": "aitw-v1/images/",
         "sampling_strategy": "all",
     },
@@ -164,6 +165,7 @@ def discover_dataset_config(dataset_path: str) -> List[Dict[str, Any]]:
             .replace(".json", "")
             .replace("-l1", "")
             .replace("-l2", "")
+            .replace("-l3", "")
         )
 
         # Skip if we already processed this split
@@ -291,7 +293,6 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
 
         if message.role == "user":
             content = content.replace("<image>", "")
-            # TODO: test if the image is always on the first user, and start with it,
 
         elif message.role == "assistant":
             content = (
@@ -299,15 +300,15 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
                 .replace("Observation: ", "")
                 .replace("Thought: ", "")
             )
-            if i == len(message) - 1:
+            if i == len(messages) - 1:
                 content = (
-                    "<code>\n" + content.replace("pyautogui.", "").strip() + "\n</code>"
+                    "<code>\n" + content.strip() + "\n</code>"
                 )
             else:
                 # TODO: Check if there is always only 2 assistants
                 content = (
                     "<think>\n"
-                    + content.replace("pyautogui.", "").strip()
+                    + content.strip()
                     + "\n</think>\n"
                 )
 
@@ -324,7 +325,7 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
 
 def convert_to_chat_format(
     data: ConversationData, json_path: str
-) -> List[Dict[str, Any]]:
+) -> list[ChatMessage]:
     """Convert data item to chat template format."""
     # This is a placeholder - you'll need to adapt this based on the actual data structure
     # The exact conversion depends on how the original data is structured
@@ -338,11 +339,11 @@ def convert_to_new_action_space(
 ) -> list[ChatMessage]:
     regex_match = None
     index = -1
-    regex = r".*?<code>\n(.*)\n</code>"
+    regex = r"<code>\n(.*?)\n</code>"
     assistant_msg = [message for message in messages if message.role == "assistant"]
     if assistant_msg:
         for i, msg in enumerate(assistant_msg):
-            regex_match = re.match(regex, msg.content)
+            regex_match = re.search(regex, msg.content, re.DOTALL)
             index = i
             if regex_match is not None:
                 break
@@ -351,13 +352,26 @@ def convert_to_new_action_space(
                 regex_match.group(1),
                 pattern_to_match=["pyautogui", "mobile", "terminate", "answer"],
             )
-            function_calls = action_conversion(function_calls, resolution=resolution)
-            new_action_string = "\n".join(
-                [function_call.to_string() for function_call in function_calls]
-            )
-            messages[index].content = messages[index].content.replace(
-                regex_match.group(1), new_action_string
-            )
+            
+            if len(function_calls) > 0:
+
+                for i, function_call in enumerate(deepcopy(function_calls)):
+                    
+                    if function_call.function_name == "pyautogui.dragTo":
+                        x1, y1 = function_calls[i-1].parameters.values()
+                        x2, y2 = function_calls[i].parameters.values()
+                        function_calls[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
+                        function_calls[i].original_string = function_calls[i].to_string()
+                        function_calls.pop(i-1)
+
+                function_calls = action_conversion(function_calls, resolution=resolution)
+
+                new_action_string = "\n".join(
+                    [function_call.to_string() for function_call in function_calls]
+                )
+                messages[index].content = messages[index].content.replace(
+                    regex_match.group(1), new_action_string
+                )
 
     return messages
 
@@ -365,7 +379,8 @@ def convert_to_new_action_space(
 def process_subset(
     config: Dict[str, Any],
     dataset_path: str,
-) -> tuple[ConversationDataList, Path]:
+    json_path: str,
+) -> Callable[[], Generator[Dict[str, Any], None, None]]:
     """Process a single dataset subset."""
     subset_name = config["subset_name"]
 
@@ -379,12 +394,31 @@ def process_subset(
     else:
         print(f"Images folder: {images_folder}")
 
-    json_config_path = config["json_path"]
+    json_config_path = dataset_dir / json_path
     with open(json_config_path, "r") as f:
         data = ConversationDataList.model_validate_json(f.read())
-        print(f"Added '{json_config_path}' with {len(data)} items")
-    return data, images_folder
+        print(f"Added '{json_config_path}' with {len(data.root)} items")
 
+    def row_generator_subset() -> Generator[Dict[str, Any], None, None]:
+        for item in tqdm(data.root):
+            # Extract image paths from the data item
+            try:
+                # Load images
+                image = load_image_from_folder(images_folder, item.image)
+                chat_message = convert_to_chat_format(item, json_path)
+                chat_message = convert_to_new_action_space(chat_message, image.size)
+                if len(chat_message) == 0:
+                    continue
+
+                row = DataRow.from_chat_messages(chat_message, image)
+                yield row.model_dump()
+            except Exception as e:
+                print(f"Error processing item: {e}", item)
+                continue
+
+
+
+    return row_generator_subset
 
 def row_generator(
     data: ConversationDataList, images_folder: Path, json_path: str
@@ -397,9 +431,11 @@ def row_generator(
             image = load_image_from_folder(images_folder, item.image)
             chat_message = convert_to_chat_format(item, json_path)
             chat_message = convert_to_new_action_space(chat_message, image.size)
+            if len(chat_message) == 0:
+                continue
 
             row = DataRow.from_chat_messages(chat_message, image)
-            yield row
+            yield row.model_dump()
         except Exception as e:
             print(f"Error processing item: {e}", item)
             continue
@@ -415,11 +451,11 @@ def make_dataset_from_original_data():
     authenticate_huggingface()
 
     dataset_path = download_dataset(
-        "xlangai/aguvis-stage2", "/Users/ammah/Documents/aguvis_raw"
+        "xlangai/aguvis-stage2", "/fsx/amir_mahla/aguvis_raw"
     )
 
-    extract_zip_files(dataset_path)
-    extract_tar_parts_grouped(dataset_path)
+    # extract_zip_files(dataset_path)
+    # extract_tar_parts_grouped(dataset_path)
 
     dataset_configs = discover_dataset_config(dataset_path)
     converted_folder = "/fsx/amir_mahla/aguvis_converted"
@@ -438,39 +474,36 @@ def make_dataset_from_original_data():
         #     )
         #     continue
         json_path = config["json_path"]
-        data, image_folder = process_subset(
-            config, dataset_path, f"{config['subset_name']}", override_existing=True
+        row_generator_subset = process_subset(
+            config, dataset_path, json_path
         )
 
         print("Creating dataset...")
         data = Dataset.from_generator(
-            row_generator,
-            gen_kwargs={
-                "data": data,
-                "images_folder": image_folder,
-                "json_path": json_path,
-            },
+            row_generator_subset,
         )
+        
+        assert isinstance(data, Dataset)
 
 
-        print("Pushing to hub...")
-        # Fix: Use config_name for subset name and split="train"
+        # print("Pushing to hub...")
+        # # Fix: Use config_name for subset name and split="train"
         data.push_to_hub(
             "smolagents/aguvis-stage-2",
             config_name=config["subset_name"],  # This sets the subset name
             split="train",  # This should be "train" not the subset name
         )
 
-        print(f"Processed and uploaded subset: {config['subset_name']}")
+        # print(f"Processed and uploaded subset: {config['subset_name']}")
 
-        # Force garbage collection to manage memory
+        # # Force garbage collection to manage memory
         gc.collect()
 
 #     # Cleanup
 #     print("\nCleaning up temporary files...")
 #     # shutil.rmtree(dataset_path, ignore_errors=True)
 #
-#     # api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
+    # api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
 #
 #     shutil.rmtree(converted_folder, ignore_errors=True)
 #
@@ -486,3 +519,58 @@ if __name__ == "__main__":
 
     #     dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
     make_dataset_from_original_data()
+
+# if __name__ == "__main__":
+#     from os import listdir
+# 
+#     dataset_path = "/fsx/amir_mahla/aguvis_raw"
+# 
+# 
+#     dataset_configs = discover_dataset_config(dataset_path)
+# 
+#     for config in dataset_configs:
+#         print(f"\n{'=' * 50}")
+#         print(config)
+# 
+#         if config["subset_name"] == "guiact-web-multi":
+#             json_path = config["json_path"]
+#             data, image_folder = process_subset(
+#                 config, dataset_path
+#             )
+# 
+#             for row in row_generator(data, image_folder, json_path):
+#                 pass
+# 
+#     repertory = "/fsx/amir_mahla/aguvis_raw"
+#     actions: set[str] = set()
+#     for file in listdir(repertory):
+#         if file.endswith(".json"):
+#             with open(f"{repertory}/{file}", "r") as f:
+#                 try:
+#                     data = ConversationDataList.model_validate_json(f.read())
+#                     print(f"Successfully parsed {file}")
+#                     for conversation in data.root:
+# 
+#                         names = parse_function_call(conversation.conversations[-1].value, pattern_to_match=["pyautogui", "mobile", "terminate", "answer"])
+# 
+#                         for i, name in enumerate(names):
+#                             actions.add(name.function_name)
+#                             if name.function_name == "pyautogui.dragTo":
+#                                 x1, y1 = names[i-1].parameters.values()
+#                                 x2, y2 = names[i].parameters.values()
+#                                 print(names[i-1].original_string)
+#                                 print(names[i].original_string)
+#                                 names[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
+#                                 names[i].original_string = names[i].to_string()
+#                                 print(names[i].original_string)
+#                                 names.pop(i-1)
+#                             chat_messages = convert_to_chat_format(conversation, file)
+# 
+#                             #test if the image is always on the first user, and start with it,
+# 
+# 
+#                 except Exception as e:
+#                     print(f"Error parsing {file}")
+#                     raise e
+#     print()
+#     # print(actions)
