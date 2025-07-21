@@ -47,7 +47,9 @@ from open_r1.configs import ScriptArguments, SFTConfig
 from open_r1.utils import get_dataset, get_model, get_tokenizer, get_processor
 from open_r1.utils.callbacks import get_callbacks
 from open_r1.utils.wandb_logging import init_wandb_training
+from PIL import Image
 from transformers import Qwen2VLProcessor
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,36 +60,30 @@ def create_vlm_collate_fn(processor):
     """Create a data collator for VLM training that handles images and text."""
     from qwen_vl_utils import process_vision_info
 
-    def collate_fn(examples):
+    def collate_fn(examples: list[dict[str, str | Image.Image]]):
         # Convert dataset format to Qwen2.5-VL message format
-        batch_messages = []
+        batch_messages: list[list[dict[str, Any]]] = []
         
         for example in examples:
-            example_texts = example["texts"]
-            example_images = example["images"]
+            system_content = example["system"]
+            user_content = example["user"]
+            assistant_content = example["assistant"]
+            image = example["image"]
             
             # Convert to Qwen2.5-VL structured message format
-            messages = []
-            for i, msg in enumerate(example_texts):
-                if msg["role"] == "user" and i == 0 and example_images:
-                    # First user message - add images
-                    content = []
-                    # Add images first
-                    for img in example_images:
-                        content.append({"type": "image", "image": img})
-                    # Then add text
-                    content.append({"type": "text", "text": msg["content"]})
-                    messages.append({"role": "user", "content": content})
-                else:
-                    # Regular text message
-                    messages.append({"role": msg["role"], "content": msg["content"]})
+            messages: list[dict[str, Any]] = []
+            messages.append({"role": "system", "content": system_content})
+            messages.append({"role": "user", "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": user_content}
+            ]})
+            messages.append({"role": "assistant", "content": assistant_content})
             
             batch_messages.append(messages)
 
         # Process each example
         texts = []
         all_image_inputs = []
-        all_video_inputs = []
         
         for messages in batch_messages:
             # Apply chat template

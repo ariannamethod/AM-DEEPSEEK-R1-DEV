@@ -11,7 +11,7 @@ import os
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Generator, Callable
+from typing import Any, Dict, List, Generator, Callable, Literal
 from tqdm import tqdm
 from datasets import Dataset, load_dataset
 from dotenv import load_dotenv
@@ -19,98 +19,27 @@ from huggingface_hub import HfApi, login, snapshot_download
 from collections import defaultdict
 from PIL import Image
 import tarfile
+from .prompts import OS_SYSTEM_PROMPT, MOBILE_SYSTEM_PROMPT
+from .models import ConversationDataList, ConversationData, ChatMessage, DataRow
+from .function_parser import parse_function_call
+from .action_conversion import action_conversion
 
 
 api = HfApi()
 
-SYSTEM_PROMPT = """You are a helpful GUI agent. You will be given a task and a screenshot of the screen. You need to perform a series of function calls in code to complete the task.
-
-When you send a message containing Python code between '<code>' and '</code>' tags, it will be executed in a stateful Jupyter notebook environment, and you will then be given the output to continued reasoning in an agentic loop.
-
-The following functions are exposed to the Python interpreter:
-<code>
-def final_answer(answer: any) -> any:
-    \"\"\"
-    Provides a final answer to the given problem.
-    Args:
-        answer: The final answer to the problem
-    \"\"\"
-
-def click(x: int, y: int) -> str:
-    \"\"\"
-    Performs a left-click at the specified coordinates
-    Args:
-        x: The x coordinate (horizontal position)
-        y: The y coordinate (vertical position)
-    \"\"\"
-
-def right_click(x: int, y: int) -> str:
-    \"\"\"
-    Performs a right-click at the specified coordinates
-    Args:
-        x: The x coordinate (horizontal position)
-        y: The y coordinate (vertical position)
-    \"\"\"
-
-def double_click(x: int, y: int) -> str:
-    \"\"\"
-    Performs a double-click at the specified coordinates
-    Args:
-        x: The x coordinate (horizontal position)
-        y: The y coordinate (vertical position)
-    \"\"\"
-
-def write(text: str) -> str:
-    \"\"\"
-    Types the specified text at the current cursor position.
-    Args:
-        text: The text to type
-    \"\"\"
-
-def press_key(key: str) -> str:
-    \"\"\"
-    Presses a keyboard key
-    Args:
-        key: The key to press (e.g. "enter", "space", "backspace", etc.).
-    \"\"\"
-
-def go_back() -> str:
-    \"\"\"
-    Goes back to the previous page in the browser. If using this tool doesn't work, just click the button directly.
-    Args:
-    \"\"\"
-
-def drag_and_drop(x1: int, y1: int, x2: int, y2: int) -> str:
-    \"\"\"
-    Clicks [x1, y1], drags mouse to [x2, y2], then release click.
-    Args:
-        x1: origin x coordinate
-        y1: origin y coordinate
-        x2: end x coordinate
-        y2: end y coordinate
-    \"\"\"
-
-def scroll(x: int = None, y: int = None, direction: Literal["up", "down"] = "down", amount: int = 2) -> str:
-    \"\"\"
-    Moves the mouse to selected coordinates, then uses the scroll button: this could scroll the page or zoom, depending on the app. DO NOT use scroll to move through linux desktop menus.
-    Args:
-        x: The x coordinate (horizontal position) of the element to scroll/zoom, defaults to None to not focus on specific coordinates
-        y: The y coordinate (vertical position) of the element to scroll/zoom, defaults to None to not focus on specific coordinates
-        direction: The direction to scroll ("up" or "down"), defaults to "down". For zoom, "up" zooms in, "down" zooms out.
-        amount: The amount to scroll. A good amount is 1 or 2.
-    \"\"\"
-
-def wait(seconds: float) -> str:
-    \"\"\"
-    Waits for the specified number of seconds. Very useful in case the prior order is still executing (for example starting very heavy applications like browsers or office apps)
-    Args:
-        seconds: Number of seconds to wait, generally 3 is enough.
-    \"\"\"
-</code>
-
-The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.
-"""
-
+# aguvis json file with mobile action space
+MOBILE_FILE = [
+    "android_control.json",
+    "gui-odyssey-l1.json",
+    "aitw-l3.json",
+    "coat.jsonamex-l2.json",
+    "amex-l1.json",
+    "amex-l3.json",
+    "gui-odyssey-l3.json",
+    "aitw-l1.json",
+    "aitw-l2.json",
+    "gui-odyssey-l2.json",
+]
 
 # TODO: some of the mappings above must be wrong because the conversion fails for some subsets
 config_dict = [
@@ -206,29 +135,6 @@ config_dict = [
     },
 ]
 
-# Action space:
-
-
-# mobile.wait(seconds=3)
-# mobile.home()
-# mobile.open_app(app_name='drupe')
-# mobile.swipe(from_coord=[0.581, 0.898], to_coord=[0.601, 0.518])
-# mobile.back()
-# mobile.long_press(x=0.799, y=0.911)
-# mobile.terminate(status='success')
-# answer('text')
-
-# pyautogui.hscroll(page=-0.1)
-# pyautogui.scroll(page=-0.1) or pyautogui.scroll(0.13)
-# pyautogui.click(x=0.8102, y=0.9463)
-# pyautogui.hotkey(keys=['ctrl', 'c'])
-# pyautogui.doubleClick()
-# pyautogui.press(keys='enter') or pyautogui.press(keys=['enter'])
-# pyautogui.moveTo(x=0.04, y=0.405)
-# pyautogui.write(message='bread buns')
-# pyautogui.dragTo(x=0.8102, y=0.9463)
-
-# ================================================
 
 def authenticate_huggingface():
     """Authenticate with HuggingFace Hub using token."""
@@ -366,298 +272,137 @@ def check_subset_exists(repo_id: str, subset_name: str) -> bool:
         return False
 
 
-def load_images_from_folder(
-    images_folder: Path, image_paths: List[str]
-) -> List[Image.Image]:
+def load_image_from_folder(images_folder: Path, img_path: str) -> Image.Image:
     """Load images from the specified folder."""
-    images = []
-    for img_path in image_paths:
-        full_path = images_folder / img_path
-        img = Image.open(full_path)
-        images.append(img.copy())
-        img.close()
-    return images
+    full_path = images_folder / img_path
+    img = Image.open(full_path)
+    return img
 
 
-def convert_to_smolagents(messages: list[dict[str, Any]]):
-    output_messages = [{"content": SYSTEM_PROMPT, "role": "system"}]
-    previous_role = None
-    for i in range(1, len(messages)):
-        content = messages[i]["content"]
+def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
+    for i, message in enumerate(messages):
+        content = message.content
 
-        # Convert the format for content
-        content = content.replace("answer(", "final_answer(")
-
-        if messages[i]["role"] == "assistant":
-            if content.startswith("Action: "):
-                content = content.replace("Action: ", "<think>\n").strip()
-                content += "\n</think>\n"
+        if message.role == "system":
+            if json_path in MOBILE_FILE:
+                content = MOBILE_SYSTEM_PROMPT
             else:
+                content = OS_SYSTEM_PROMPT
+
+        if message.role == "user":
+            content = content.replace("<image>", "")
+            # TODO: test if the image is always on the first user, and start with it,
+
+        elif message.role == "assistant":
+            content = (
+                content.replace("Action: ", "")
+                .replace("Observation: ", "")
+                .replace("Thought: ", "")
+            )
+            if i == len(message) - 1:
                 content = (
                     "<code>\n" + content.replace("pyautogui.", "").strip() + "\n</code>"
                 )
+            else:
+                # TODO: Check if there is always only 2 assistants
+                content = (
+                    "<think>\n"
+                    + content.replace("pyautogui.", "").strip()
+                    + "\n</think>\n"
+                )
 
-        messages[i]["content"] = content
+        messages[i].content = content
 
-        # Fuse subsequent messages if they are both assistants
-        if (
-            messages[i]["role"] == "assistant"
-            and messages[i - 1]["role"] == "assistant"
-        ):
+        # Fuse subsequent messages have the same role, merge it
+        if i > 0 and messages[i].role == messages[i - 1].role:
             # Need to fuse both messages
-            output_messages[-1]["content"] += messages[i]["content"]
-        else:
-            output_messages.append(messages[i])
-    return output_messages
+            messages[i - 1].content += messages[i].content
+            messages.pop(i)
+
+    return messages
 
 
-def test_conversion():
-    origin = [
-        {
-            "content": 'You are a GUI agent. You are given a task and a screenshot of the screen. You need to perform a series of actions to complete the task.\n\nYou have access to the following functions:\n- {"name": "answer", "description": "Answer a question", "parameters": {"type": "object", "properties": {"answer": {"type": "string", "description": "The answer to the question"}}, "required": ["answer"]}}\n',
-            "role": "assistant",
-        },
-        {
-            "content": "<image>\nPlease generate the next move according to the UI screenshot, instruction and previous actions.\n\nInstruction: What information does the site provide about Judith Lauand's career, works and exhibitions?\n\nPrevious actions:\nStep 1: Click on the link labeled 'Judith Lauand: Brazilian 1922-2022' to explore more about her career and exhibitions.\nStep 2: Click on the 'more' link below the overview text to access additional information about Judith Lauand's career and exhibitions.\nStep 3: Scroll down slightly to view additional information about Judith Lauand's career and exhibitions.",
-            "role": "user",
-        },
-        {
-            "content": "Action: The answer is 'Judith Lauand was a Brazilian painter who was born in 1922.\\nNumerous key galleries and museums such as MASP, Museu de Arte de São Paulo have featured Judith Lauand's work in the past.\\nJudith Lauand's work has been offered at auction multiple times, with realized prices ranging from 515 USD to 87,500 USD, depending on the size and medium of the artwork. Since 2011 the record price for this artist at auction is 87,500 USD for Composition on Red Background, sold at Christie's New York in 2015.'\n",
-            "role": "assistant",
-        },
-        {
-            "content": "answer('Judith Lauand was a Brazilian painter who was born in 1922.\nNumerous key galleries and museums such as MASP, Museu de Arte de São Paulo have featured Judith Lauand's work in the past.\nJudith Lauand's work has been offered at auction multiple times, with realized prices ranging from 515 USD to 87,500 USD, depending on the size and medium of the artwork. Since 2011 the record price for this artist at auction is 87,500 USD for Composition on Red Background, sold at Christie's New York in 2015.')",
-            "role": "assistant",
-        },
-    ]
-    converted = convert_to_smolagents(origin)
-    print("CONVERTED:\n", converted)
-    expected_messages = [
-        {"content": SYSTEM_PROMPT, "role": "system"},
-        {
-            "content": "<image>\nPlease generate the next move according to the UI screenshot, instruction and previous actions.\n\nInstruction: What information does the site provide about Judith Lauand's career, works and exhibitions?\n\nPrevious actions:\nStep 1: Click on the link labeled 'Judith Lauand: Brazilian 1922-2022' to explore more about her career and exhibitions.\nStep 2: Click on the 'more' link below the overview text to access additional information about Judith Lauand's career and exhibitions.\nStep 3: Scroll down slightly to view additional information about Judith Lauand's career and exhibitions.",
-            "role": "user",
-        },
-        {
-            "content": "<think>The answer is 'Judith Lauand was a Brazilian painter who was born in 1922.\\nNumerous key galleries and museums such as MASP, Museu de Arte de São Paulo have featured Judith Lauand's work in the past.\\nJudith Lauand's work has been offered at auction multiple times, with realized prices ranging from 515 USD to 87,500 USD, depending on the size and medium of the artwork. Since 2011 the record price for this artist at auction is 87,500 USD for Composition on Red Background, sold at Christie's New York in 2015.'\n</think>\n<code>\nfinal_answer(\"The answer is 'Judith Lauand was a Brazilian painter who was born in 1922.\\nNumerous key galleries and museums such as MASP, Museu de Arte de São Paulo have featured Judith Lauand's work in the past.\\nJudith Lauand's work has been offered at auction multiple times, with realized prices ranging from 515 USD to 87,500 USD, depending on the size and medium of the artwork. Since 2011 the record price for this artist at auction is 87,500 USD for Composition on Red Background, sold at Christie's New York in 2015.'\n\")\n</code>",
-            "role": "assistant",
-        },
-    ]
-    for i, message in enumerate(converted):
-        if not message == expected_messages[i]:
-            print(f"Message {i} is not equal to expected message")
-            print(f"Expected: {expected_messages[i]}")
-            print(f"Actual: {message}")
-            return False
-    return True
-
-
-def convert_to_chat_format(data_item: Dict[str, Any]) -> List[Dict[str, Any]]:
+def convert_to_chat_format(
+    data: ConversationData, json_path: str
+) -> List[Dict[str, Any]]:
     """Convert data item to chat template format."""
     # This is a placeholder - you'll need to adapt this based on the actual data structure
     # The exact conversion depends on how the original data is structured
-    chat_messages = []
-
-    # Example conversion - adapt based on actual data structure
-    if "conversations" in data_item:
-        for conv in data_item["conversations"]:
-            if "from" in conv and "value" in conv:
-                role = "user" if conv["from"] == "human" else "assistant"
-                message = {"role": role, "content": conv["value"]}
-                chat_messages.append(message)
-    elif "instruction" in data_item and "response" in data_item:
-        chat_messages = [
-            {"role": "user", "content": data_item["instruction"]},
-            {"role": "assistant", "content": data_item["response"]},
-        ]
-    else:
-        raise ValueError(f"Unknown data item: {data_item}")
-
-    chat_messages = convert_to_smolagents(chat_messages)
+    chat_messages = data.to_chat_messages()
+    chat_messages = convert_to_code_agent_format(chat_messages, json_path)
     return chat_messages
+
+
+def convert_to_new_action_space(
+    messages: list[ChatMessage], resolution: tuple[int, int]
+) -> list[ChatMessage]:
+    regex_match = None
+    index = -1
+    regex = r".*?<code>\n(.*)\n</code>"
+    assistant_msg = [message for message in messages if message.role == "assistant"]
+    if assistant_msg:
+        for i, msg in enumerate(assistant_msg):
+            regex_match = re.match(regex, msg.content)
+            index = i
+            if regex_match is not None:
+                break
+        if regex_match is not None:
+            function_calls = parse_function_call(
+                regex_match.group(1),
+                pattern_to_match=["pyautogui", "mobile", "terminate", "answer"],
+            )
+            function_calls = action_conversion(function_calls, resolution=resolution)
+            new_action_string = "\n".join(
+                [function_call.to_string() for function_call in function_calls]
+            )
+            messages[index].content = messages[index].content.replace(
+                regex_match.group(1), new_action_string
+            )
+
+    return messages
 
 
 def process_subset(
     config: Dict[str, Any],
     dataset_path: str,
-    destination_path: str,
-    override_existing: bool = False,
-) -> Callable:
+) -> tuple[ConversationDataList, Path]:
     """Process a single dataset subset."""
     subset_name = config["subset_name"]
-    repo_id = "smolagents/aguvis-stage-2"
-
-    # Check if the subset already exists in the remote dataset
-    if check_subset_exists(repo_id, subset_name) and not override_existing:
-        print(
-            f"Subset '{subset_name}' already exists in {repo_id}, skipping processing."
-        )
-        return None
 
     print(f"Processing split: {subset_name}")
 
     dataset_dir = Path(dataset_path)
     images_folder = dataset_dir / config["subset_name"] / config["images_folder"]
+
     if not images_folder.exists():
         print(f"Images folder not found: {images_folder}")
-        return None
     else:
         print(f"Images folder: {images_folder}")
-    return None
 
-    # Find all JSON files that match this split (e.g., mind2web-l1.json, mind2web-l2.json)
-    json_files = []
-    for cfg in config_dict:
-        cfg_split = (
-            cfg["json_path"].replace(".json", "").replace("-l1", "").replace("-l2", "")
-        )
-        if cfg_split == subset_name:
-            json_path = dataset_dir / cfg["json_path"]
-            if json_path.exists():
-                json_files.append(json_path)
-
-    # Load and merge JSON data from all matching files
-    data = []
-    for json_file in json_files:
-        print(f"Loading data from: {json_file}")
-        with open(json_file, "r") as f:
-            file_data = json.load(f)
-            data.extend(file_data)
-            print(f"  Added {len(file_data)} items")
-
-    def process_items() -> Generator[Dict[str, Any], None, None]:
-        pbar = tqdm(data)
-        for item in pbar:
-            # Extract image paths from the data item
-            try:
-                image_paths = []
-                if "images" in item:
-                    image_paths = (
-                        item["images"]
-                        if isinstance(item["images"], list)
-                        else [item["images"]]
-                    )
-                elif "image" in item:
-                    image_paths = [item["image"]]
-
-                # Load images
-                images = load_images_from_folder(images_folder, image_paths)
-
-                texts = convert_to_chat_format(item)
-
-                entry = {"images": images, "texts": texts}
-                entry = convert_row_to_screenenv(entry)
-                yield entry
-            except Exception as e:
-                print(f"Error processing item: {e}", item)
-                continue
-
-    return process_items
+    json_config_path = config["json_path"]
+    with open(json_config_path, "r") as f:
+        data = ConversationDataList.model_validate_json(f.read())
+        print(f"Added '{json_config_path}' with {len(data)} items")
+    return data, images_folder
 
 
-def convert_row_to_screenenv(
-    example: dict[str, Image.Image | list[dict[str, Any]]],
-) -> dict[str, Image.Image | list[dict[str, Any]]]:
-    """
-    Converts the dataset to the action space defined in ScreenEnv: https://github.com/huggingface/screenenv/blob/f8fb60d4e805e4c139f39855c04263f81e82155f/examples/desktop_agent.py#L114
-    Also, converts the action space to absolute coordinates for qwen models.
-    """
-    # example["texts"][0]["content"] = SYSTEM_PROMPT
-    for i, message in enumerate(example["texts"]):
-        if message["role"] == "assistant":
-            if (
-                "click(" in message["content"]
-                or "right_click(" in message["content"]
-                or "double_click(" in message["content"]
-            ):
-                # Regex that detects to consecutive floats between parentheses, also preceded by OPTIONAL x= and y=, like (x=1.0, y=2.028) or (1.0, 2.028)
-                pattern = r"(click|right_click|double_click)\((?:x=)?(\d+\.\d+), (?:y=)?(\d+\.\d+)\)"
-                matches = re.finditer(pattern, message["content"])
-                for match in matches:
-                    name, x, y = match.groups()
-                    assert x is not None and y is not None
-                    image_size = example["images"][0].size
-                    x_absolute = round(float(x) * image_size[0])
-                    y_absolute = round(float(y) * image_size[1])
-                    message["content"] = message["content"].replace(
-                        match.group(0), f"{name}(x={x_absolute}, y={y_absolute})"
-                    )
+def row_generator(
+    data: ConversationDataList, images_folder: Path, json_path: str
+) -> Generator[Dict[str, Any], None, None]:
+    conversations: list[ConversationData] = data.root
+    for item in tqdm(conversations):
+        # Extract image paths from the data item
+        try:
+            # Load images
+            image = load_image_from_folder(images_folder, item.image)
+            chat_message = convert_to_chat_format(item, json_path)
+            chat_message = convert_to_new_action_space(chat_message, image.size)
 
-            if "scroll(" in message["content"]:
-                # Convert scroll(page=-0.33) to scroll(direction="down", amount=0.33)
-                pattern = r"scroll\((?:page=)?(-?\d+\.\d+)\)"
-                matches = re.finditer(pattern, message["content"])
-                for match in matches:
-                    if float(match.group(1)) < 0:
-                        message["content"] = message["content"].replace(
-                            match.group(0),
-                            f"scroll(direction='up', amount={-1 * float(match.group(1))})",
-                        )
-                    else:
-                        message["content"] = message["content"].replace(
-                            match.group(0),
-                            f"scroll(direction='down', amount={float(match.group(1))})",
-                        )
-
-            if "write(" in message["content"]:
-                # Replace "write(message=...)" with "write(text=...)"
-                message["content"] = message["content"].replace(
-                    "write(message=", "write(text="
-                )
-
-            if "press(" in message["content"]:
-                message["content"] = message["content"].replace(
-                    "press(keys=", "press(key="
-                )
-
-            if i == len(example["texts"]) - 1 and not any(
-                action in message["content"]
-                for action in [
-                    "click",
-                    "right_click",
-                    "double_click",
-                    "scroll",
-                    "write",
-                    "press",
-                ]
-            ):
-                # If no action is detected in the final assistant message, wrap the message in a final_answer call
-                message_content = message["content"]
-                message_content = (
-                    message_content.replace("<code>", "").replace("</code>", "").strip()
-                )
-                message["content"] = f"<code>\nfinal_answer({message_content})\n</code>"
-    return example
-
-
-test_sample = {
-    "texts": [
-        {
-            "role": "system",  # Should not be changed
-            "content": "click(x=0.5, y=0.5)",
-        },
-        {
-            "role": "assistant",
-            "content": "click(x=0.5, y=0.5)\ndouble_click(x=0.5, y=0.597814)",
-        },
-        {"role": "assistant", "content": "scroll(page=0.33)\nscroll(page=-0.33)"},
-        {"role": "assistant", "content": "<code>\nThe answer is 12\n</code>"},
-    ],
-    "images": [Image.new("RGB", (100, 100))],
-}
-
-test_output = convert_row_to_screenenv(test_sample)
-assert (
-    test_output["texts"][1]["content"] == "click(x=50, y=50)\ndouble_click(x=50, y=60)"
-), test_output["texts"][1]["content"]
-assert (
-    test_output["texts"][2]["content"]
-    == "scroll(direction='down', amount=0.33)\nscroll(direction='up', amount=0.33)"
-), test_output["texts"][2]["content"]
-assert (
-    test_output["texts"][3]["content"]
-    == "<code>\nfinal_answer(The answer is 12)\n</code>"
-), test_output["texts"][3]["content"]
+            row = DataRow.from_chat_messages(chat_message, image)
+            yield row
+        except Exception as e:
+            print(f"Error processing item: {e}", item)
+            continue
 
 
 def make_dataset_from_original_data():
@@ -669,52 +414,66 @@ def make_dataset_from_original_data():
     # Step 0: Authenticate with HuggingFace Hub
     authenticate_huggingface()
 
-    dataset_path = download_dataset("xlangai/aguvis-stage2", "/fsx/amir_mahla/aguvis_raw")
+    dataset_path = download_dataset(
+        "xlangai/aguvis-stage2", "/Users/ammah/Documents/aguvis_raw"
+    )
 
-    # extract_zip_files(dataset_path)
-    # extract_tar_parts_grouped(dataset_path)
+    extract_zip_files(dataset_path)
+    extract_tar_parts_grouped(dataset_path)
 
     dataset_configs = discover_dataset_config(dataset_path)
     converted_folder = "/fsx/amir_mahla/aguvis_converted"
+    converted_repo_id = "smolagents/aguvis-stage-2"
 
+    # TODO: Make it in multi processing
     for config in dataset_configs:
         print(f"\n{'=' * 50}")
         print(config)
-        process_items = process_subset(
+
+        # # Check if the subset already exists in the remote dataset
+        # subset_name = config["subset_name"]
+        # if check_subset_exists(repo_id, subset_name) and not override_existing:
+        #     print(
+        #         f"Subset '{subset_name}' already exists in {repo_id}, skipping processing."
+        #     )
+        #     continue
+        json_path = config["json_path"]
+        data, image_folder = process_subset(
             config, dataset_path, f"{config['subset_name']}", override_existing=True
         )
 
-    exit()
+        print("Creating dataset...")
+        data = Dataset.from_generator(
+            row_generator,
+            gen_kwargs={
+                "data": data,
+                "images_folder": image_folder,
+                "json_path": json_path,
+            },
+        )
 
-#         # Skip if process_subset returned None (subset already exists)
-#         if process_items is None:
-#             continue
-# 
-#         print("Creating dataset...")
-#         data = Dataset.from_generator(process_items)
-#         print("Pushing to hub...")
-#         # Fix: Use config_name for subset name and split="train"
-#         data.push_to_hub(
-#             "smolagents/aguvis-stage-2",
-#             config_name=config["subset_name"],  # This sets the subset name
-#             split="train",  # This should be "train" not the subset name
-#         )
-# 
-#         print(f"Processed and uploaded subset: {config['subset_name']}")
-# 
-#         # Force garbage collection to manage memory
-#         gc.collect()
-# 
-#     print(f"Subsets uploaded!")
-# 
+
+        print("Pushing to hub...")
+        # Fix: Use config_name for subset name and split="train"
+        data.push_to_hub(
+            "smolagents/aguvis-stage-2",
+            config_name=config["subset_name"],  # This sets the subset name
+            split="train",  # This should be "train" not the subset name
+        )
+
+        print(f"Processed and uploaded subset: {config['subset_name']}")
+
+        # Force garbage collection to manage memory
+        gc.collect()
+
 #     # Cleanup
 #     print("\nCleaning up temporary files...")
 #     # shutil.rmtree(dataset_path, ignore_errors=True)
-# 
+#
 #     # api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
-# 
+#
 #     shutil.rmtree(converted_folder, ignore_errors=True)
-# 
+#
 #     print("All done!")
 
 

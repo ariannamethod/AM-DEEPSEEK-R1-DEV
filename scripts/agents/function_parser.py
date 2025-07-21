@@ -15,6 +15,7 @@ class FunctionCall:
     function_name: str
     parameters: Dict[str, Any]
     original_string: str
+    description: str = ""
     
     def to_string(self) -> str:
         """
@@ -44,7 +45,7 @@ class FunctionCall:
                 # Positional argument
                 positional_args.append((int(name.split("_")[1]), value))
             else:
-                # Named argument
+                # kwargs
                 named_args.append((name, value))
         
         # Sort positional arguments by index
@@ -94,45 +95,59 @@ class FunctionCall:
             return str(value)
 
 
-def parse_function_call(function_string: str) -> FunctionCall:
+def parse_function_call(function_string: str, pattern_to_match: list[str] = []) -> List[FunctionCall]:
     """
-    Parse a function call string and extract function name and parameters.
+    Parse a function call string and extract all function calls found.
     
     Args:
-        function_string: String representation of a function call
+        function_string: String representation of function calls
         
     Returns:
-        FunctionCall object with parsed information
+        List of FunctionCall objects with parsed information
         
     Examples:
         >>> parse_function_call("mobile.wait(seconds=3)")
-        FunctionCall(function_name='mobile.wait', parameters={'seconds': 3}, ...)
+        [FunctionCall(function_name='wait', parameters={'seconds': 3}, ...)]
         
-        >>> parse_function_call("pyautogui.click(x=0.8102, y=0.9463)")
-        FunctionCall(function_name='pyautogui.click', parameters={'x': 0.8102, 'y': 0.9463}, ...)
+        >>> parse_function_call("mobile. wait(seconds=3)")
+        [FunctionCall(function_name='wait', parameters={'seconds': 3}, ...)]
+        
+        >>> parse_function_call("mobile.wait(seconds=3) mobile.home()")
+        [FunctionCall(function_name='wait', parameters={'seconds': 3}, ...), FunctionCall(function_name='home', parameters={}, ...)]
     """
     # Remove any leading/trailing whitespace
     function_string = function_string.strip()
     
     # Pattern to match function calls with parameters
     # Matches: function_name(param1=value1, param2=value2, ...)
-    pattern = r'^([a-zA-Z_][a-zA-Z0-9_.]*)\s*\((.*)\)$'
+    # Can have any characters before the function call, extracts just the function name
+    pattern = r'.*?([a-zA-Z_][a-zA-Z0-9_.]*)\(([^)]*)\)'
     
-    match = re.match(pattern, function_string)
-    if not match:
-        raise ValueError(f"Invalid function call format: {function_string}")
+    matches = re.findall(pattern, function_string)
+    if not matches:
+        raise ValueError(f"No valid function calls found in: {function_string}")
     
-    function_name = match.group(1)
-    params_string = match.group(2)
+    results = []
+    for match in matches:
+        function_name = match[0]
+        params_string = match[1]
+        
+        if pattern_to_match and any(pattern not in function_name for pattern in pattern_to_match):
+            continue
+        
+        # Parse parameters
+        parameters = parse_parameters(params_string)
+        
+        # Create the original string for this specific function call
+        original_string = f"{function_name}({params_string})"
+        
+        results.append(FunctionCall(
+            function_name=function_name,
+            parameters=parameters,
+            original_string=original_string
+        ))
     
-    # Parse parameters
-    parameters = parse_parameters(params_string)
-    
-    return FunctionCall(
-        function_name=function_name,
-        parameters=parameters,
-        original_string=function_string
-    )
+    return results
 
 
 def parse_parameters(params_string: str) -> Dict[str, Any]:
@@ -414,8 +429,8 @@ def parse_multiple_functions(function_strings: List[str]) -> List[FunctionCall]:
     results = []
     for func_str in function_strings:
         try:
-            result = parse_function_call(func_str)
-            results.append(result)
+            result_list = parse_function_call(func_str)
+            results.extend(result_list)
         except Exception as e:
             print(f"Warning: Could not parse function call '{func_str}': {e}")
             continue
@@ -435,7 +450,7 @@ def extract_function_calls_from_text(text: str) -> List[FunctionCall]:
     """
     # Pattern to find function calls in text
     # Matches: function_name(param1=value1, param2=value2)
-    pattern = r'[a-zA-Z_][a-zA-Z0-9_.]*\s*\([^)]*\)'
+    pattern = r'[a-zA-Z_][a-zA-Z0-9_.]*\([^)]*\)'
     
     matches = re.findall(pattern, text)
     return parse_multiple_functions(matches)
@@ -443,9 +458,7 @@ def extract_function_calls_from_text(text: str) -> List[FunctionCall]:
 
 # Example usage and testing
 if __name__ == "__main__":
-    # Test cases from the original code
     test_cases = [
-        "mobile.wait(seconds=3)",
         "mobile.home()",
         "mobile.open_app(app_name='drupe')",
         "mobile.swipe(from_coord=[0.581, 0.898], to_coord=[0.601, 0.518])",
@@ -464,6 +477,7 @@ if __name__ == "__main__":
         "pyautogui.moveTo(x=0.04, y=0.405)",
         "pyautogui.write(message='bread buns')",
         "pyautogui.dragTo(x=0.8102, y=0.9463)",
+        "mobile.wait(seconds=3)\nmobile.swipe(from_coord=[0.581, 0.898], to_coord=[0.601, 0.518])",
         # Additional test cases for multiple positional arguments
         "function(arg1, arg2, arg3)",
         "function('hello', 123, x=0.5)",
@@ -477,10 +491,11 @@ if __name__ == "__main__":
     
     for test_case in test_cases:
         try:
-            result = parse_function_call(test_case)
+            results = parse_function_call(test_case)
             print(f"✓ {test_case}")
-            print(f"  Function: {result.function_name}")
-            print(f"  Parameters: {result.parameters}")
+            for result in results:
+                print(f"  Function: {result.function_name}")
+                print(f"  Parameters: {result.parameters}")
             print()
         except Exception as e:
             print(f"✗ {test_case}")
@@ -521,9 +536,11 @@ if __name__ == "__main__":
     ]
     
     for test_case in reconstruction_tests:
-        parsed = parse_function_call(test_case)
-        reconstructed = parsed.to_string()
-        print(f"Original:  {test_case}")
-        print(f"Reconstructed: {reconstructed}")
-        print(f"Match: {test_case == reconstructed}")
-        print() 
+        parsed_list = parse_function_call(test_case)
+        for parsed in parsed_list:
+            reconstructed = parsed.to_string()
+            print(f"Original:  {test_case}")
+            print(f"Reconstructed: {reconstructed}")
+            print(f"Match: {test_case == reconstructed}")
+            assert test_case == reconstructed
+            print() 

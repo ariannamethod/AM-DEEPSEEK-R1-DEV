@@ -1,6 +1,12 @@
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, RootModel, field_validator
 from copy import deepcopy
+from PIL import Image
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
 
 
 class ConversationEntry(BaseModel):
@@ -8,6 +14,15 @@ class ConversationEntry(BaseModel):
     value: str
     recipient: Optional[str] = None
     end_turn: Optional[bool] = None
+
+    def to_chat_message(self) -> ChatMessage
+        if self.from_ == "system":
+            role = "system"
+        elif self.from_ == "human":
+            role = "user"
+        else:
+            role = "assistant"
+        return ChatMessage(role=role, value=self.value)
 
 
 class ConversationData(BaseModel):
@@ -25,16 +40,30 @@ class ConversationData(BaseModel):
                 raise ValueError("Expected 1 or 2 images, got multiple")
         return v
 
+    def to_chat_messages(self) -> list[ChatMessage]:
+        return [conversation.to_chat_message() for conversation in self.conversations]
+
 class ConversationDataList(RootModel[List[ConversationData]]):
     pass
 
+class DataRow:
+    system: str 
+    user: str
+    assitant: str
+    image: Image.Image
 
+    def from_chat_messages(messages: list[ChatMessage], image: Image.Image) -> "DataRow":
+        system, user, assistant = None
+        for message in messages:
+            if message.role == "system":
+                system = message.content
+            elif message.role == "user":
+                user = message.content
+            elif message.role == "assistant":
+                assistant = message.content
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant", "system"]
-    content: str
-    image: Optional[str] = None
-
+        return DataRow(system=system, user=user, assistant=assistant, image=image)
+            
 
 if __name__ == "__main__":
     from os import listdir
