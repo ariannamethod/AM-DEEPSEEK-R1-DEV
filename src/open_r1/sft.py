@@ -39,7 +39,12 @@ import sys
 
 import datasets
 import transformers
-from transformers import set_seed, AutoModelForVision2Seq, AutoProcessor, LlavaForConditionalGeneration
+from transformers import (
+    set_seed,
+    AutoModelForVision2Seq,
+    AutoProcessor,
+    LlavaForConditionalGeneration,
+)
 from transformers.trainer_utils import get_last_checkpoint
 from trl import ModelConfig, SFTTrainer, TrlParser, get_peft_config, setup_chat_format
 
@@ -50,101 +55,15 @@ from open_r1.utils.wandb_logging import init_wandb_training
 from PIL import Image
 from transformers import Qwen2VLProcessor
 from typing import Any
+from scripts.agents.function_parser import parse_function_call
+from scripts.agents.qwenvl_collator import create_vlm_collate_fn
 
 logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-def create_vlm_collate_fn(processor):
-    """Optimized collate function for VLM training that masks system prompt tokens."""
-    from qwen_vl_utils import process_vision_info
-
-
-    def collate_fn(examples: list[dict[str, str | Image.Image]]):
-        batch_messages = []
-        system_prompts = []
-        user_prompts = []
-        for example in examples:
-            system = example["system"]
-            user = example["user"]
-            assistant = example["assistant"]
-            image = example["image"]
-
-            system_prompts.append(system)
-            user_prompts.append(user)
-            batch_messages.append([
-                {"role": "system", "content": system},
-                {"role": "user", "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": user}
-                ]},
-                {"role": "assistant", "content": assistant}
-            ])
-
-        texts = [
-            processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=False
-            )
-            for messages in batch_messages
-        ]
-
-        all_image_inputs = []
-        for messages in batch_messages:
-            image_inputs, _ = process_vision_info(messages)
-            if image_inputs:
-                all_image_inputs.extend(image_inputs)
-
-        batch = processor(
-            text=texts,
-            images=all_image_inputs if all_image_inputs else None,
-            padding=True,
-            return_tensors="pt",
-            max_length=4096
-        )
-
-        input_ids = batch["input_ids"]
-        labels = input_ids.clone()
-        labels[labels == processor.tokenizer.pad_token_id] = -100
-
-        if hasattr(processor, "image_token"):
-            image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
-            if image_token_id is not None:
-                labels[labels == image_token_id] = -100
-        else:
-            raise ValueError("Processor does not have image_token")
-
-
-        system_encodings = processor.tokenizer(
-            system_prompts,
-            add_special_tokens=False,
-            padding=False
-        )["input_ids"]
-
-        user_encodings = processor.tokenizer(
-            user_prompts,
-            add_special_tokens=False,
-            padding=False
-        )["input_ids"]
-
-
-        for encodings in [system_encodings, user_encodings]:
-            for i, system_ids in enumerate(encodings):
-                if input_ids[i, :len(system_ids)].tolist() == system_ids:
-                    labels[i, :len(system_ids)] = -100
-                else:
-                    seq = input_ids[i].tolist()
-                    for j in range(len(seq) - len(system_ids) + 1):
-                        if seq[j:j + len(system_ids)] == system_ids:
-                            labels[i, j:j + len(system_ids)] = -100
-                            break  # early exit
-
-        batch["labels"] = labels
-        return batch
-
-    return collate_fn
 
 def main(script_args, training_args, model_args):
     # Force single GPU mode if requested
@@ -193,7 +112,7 @@ def main(script_args, training_args, model_args):
 
     if training_args.vision_model:
         logger.info("Setting up vision-language model training")
-        
+
         # Set VLM-specific training arguments (following TRL reference)
         training_args.gradient_checkpointing_kwargs = dict(use_reentrant=False)
         training_args.remove_unused_columns = False
@@ -201,23 +120,25 @@ def main(script_args, training_args, model_args):
         training_args.ddp_find_unused_parameters = True
 
         # Load processor and model for VLM
-        processor = get_processor(model_args, training_args, script_args)
-        model = get_model(model_args, training_args)  # This should return AutoModelForVision2Seq
-        data_collator = create_vlm_collate_fn(processor)
+        processor = get_processor(model_args, training_args)
+        model = get_model(
+            model_args, training_args
+        )  # This should return AutoModelForVision2Seq
+        data_collator = create_vlm_collate_fn(processor, script_args)
         processing_class = processor.tokenizer
         model_tags = ["open-r1", "vision-language", "vlm"]
-        
+
     else:
         logger.info("Setting up text-only model training")
-        
+
         # Load tokenizer and model for text-only
         tokenizer = get_tokenizer(model_args, training_args)
         model = get_model(model_args, training_args)
-        
+
         if tokenizer.chat_template is None:
             logger.info("No chat template provided, defaulting to ChatML.")
             model, tokenizer = setup_chat_format(model, tokenizer, format="chatml")
-            
+
         data_collator = None  # Use default
         processing_class = tokenizer
         model_tags = ["open-r1"]

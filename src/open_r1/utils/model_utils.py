@@ -20,22 +20,13 @@ def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig
     return tokenizer
 
 
-def get_processor(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig, script_args: ScriptArguments) -> AutoProcessor:
+def get_processor(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> AutoProcessor:
     """Get the processor for VLM models."""
-
-    if script_args.image_resize is not None:
-        image_resize = dict(
-            min_pixels=script_args.image_resize["min_pixels"],
-            max_pixels=script_args.image_resize["max_pixels"],
-        )
-    else:
-        image_resize = {}
 
     processor = AutoProcessor.from_pretrained(
         model_args.model_name_or_path,
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
-        **image_resize,
     )
 
     if training_args.chat_template is not None:
