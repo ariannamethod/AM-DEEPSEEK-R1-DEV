@@ -62,7 +62,6 @@ def create_vlm_collate_fn(processor):
 
 
     def collate_fn(examples: list[dict[str, str | Image.Image]]):
-        # Step 1: Prepare inputs and messages
         batch_messages = []
         system_prompts = []
         user_prompts = []
@@ -83,7 +82,6 @@ def create_vlm_collate_fn(processor):
                 {"role": "assistant", "content": assistant}
             ])
 
-        # Step 2: Generate full text inputs
         texts = [
             processor.apply_chat_template(
                 messages,
@@ -93,14 +91,12 @@ def create_vlm_collate_fn(processor):
             for messages in batch_messages
         ]
 
-        # Step 3: Extract vision info (images)
         all_image_inputs = []
         for messages in batch_messages:
             image_inputs, _ = process_vision_info(messages)
             if image_inputs:
                 all_image_inputs.extend(image_inputs)
 
-        # Step 4: Tokenize full examples
         batch = processor(
             text=texts,
             images=all_image_inputs if all_image_inputs else None,
@@ -113,7 +109,6 @@ def create_vlm_collate_fn(processor):
         labels = input_ids.clone()
         labels[labels == processor.tokenizer.pad_token_id] = -100
 
-        # Step 5: Mask image tokens
         if hasattr(processor, "image_token"):
             image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
             if image_token_id is not None:
@@ -122,7 +117,6 @@ def create_vlm_collate_fn(processor):
             raise ValueError("Processor does not have image_token")
 
 
-        # Step 6: Efficient batched system prompt masking
         system_encodings = processor.tokenizer(
             system_prompts,
             add_special_tokens=False,
@@ -138,11 +132,9 @@ def create_vlm_collate_fn(processor):
 
         for encodings in [system_encodings, user_encodings]:
             for i, system_ids in enumerate(encodings):
-                # Fast prefix check (common case)
                 if input_ids[i, :len(system_ids)].tolist() == system_ids:
                     labels[i, :len(system_ids)] = -100
                 else:
-                    # Fallback: scan to find match
                     seq = input_ids[i].tolist()
                     for j in range(len(seq) - len(system_ids) + 1):
                         if seq[j:j + len(system_ids)] == system_ids:
