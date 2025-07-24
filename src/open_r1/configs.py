@@ -89,8 +89,8 @@ class ScriptArguments(trl.ScriptArguments):
             raise ValueError("Either `dataset_name` or `dataset_mixture` must be provided")
 
         if self.image_resize is not None:
-            if not isinstance(self.image_resize, dict) or "min_pixels" not in self.image_resize or "max_pixels" not in self.image_resize:
-                raise ValueError("image_resize must be a dictionary with a 'min_pixels' and 'max_pixels' key.")
+            if not isinstance(self.image_resize, dict) or "min_pixels" not in self.image_resize or "max_pixels" not in self.image_resize or "factor" not in self.image_resize:
+                raise ValueError("image_resize must be a dictionary with a 'min_pixels', 'max_pixels' and 'factor' key.")
 
         if self.dataset_mixture is not None:
             if not isinstance(self.dataset_mixture, dict) or "datasets" not in self.dataset_mixture:
