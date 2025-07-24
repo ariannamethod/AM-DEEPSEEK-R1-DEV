@@ -33,8 +33,9 @@ image_resize:
 max_steps: -1
 num_train_epochs: 1
 bf16: true
-do_eval: false
-eval_strategy: 'no'
+do_eval: true
+eval_strategy: 'steps'
+eval_steps: 100
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
