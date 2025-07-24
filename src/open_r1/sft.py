@@ -57,65 +57,99 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def create_vlm_collate_fn(processor):
-    """Create a data collator for VLM training that handles images and text."""
+    """Optimized collate function for VLM training that masks system prompt tokens."""
     from qwen_vl_utils import process_vision_info
 
+
     def collate_fn(examples: list[dict[str, str | Image.Image]]):
-        # Convert dataset format to Qwen2.5-VL message format
-        batch_messages: list[list[dict[str, Any]]] = []
-        
+        # Step 1: Prepare inputs and messages
+        batch_messages = []
+        system_prompts = []
+        user_prompts = []
         for example in examples:
-            system_content = example["system"]
-            user_content = example["user"]
-            assistant_content = example["assistant"]
+            system = example["system"]
+            user = example["user"]
+            assistant = example["assistant"]
             image = example["image"]
-            
-            # Convert to Qwen2.5-VL structured message format
-            messages: list[dict[str, Any]] = []
-            messages.append({"role": "system", "content": system_content})
-            messages.append({"role": "user", "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": user_content}
-            ]})
-            messages.append({"role": "assistant", "content": assistant_content})
-            
-            batch_messages.append(messages)
 
-        # Process each example
-        texts = []
+            system_prompts.append(system)
+            user_prompts.append(user)
+            batch_messages.append([
+                {"role": "system", "content": system},
+                {"role": "user", "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": user}
+                ]},
+                {"role": "assistant", "content": assistant}
+            ])
+
+        # Step 2: Generate full text inputs
+        texts = [
+            processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            for messages in batch_messages
+        ]
+
+        # Step 3: Extract vision info (images)
         all_image_inputs = []
-        
         for messages in batch_messages:
-            # Apply chat template
-            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-            texts.append(text)
-            
-            # Extract vision info
             image_inputs, _ = process_vision_info(messages)
-            all_image_inputs.extend(image_inputs if image_inputs else [])
+            if image_inputs:
+                all_image_inputs.extend(image_inputs)
 
-        # Process the batch
+        # Step 4: Tokenize full examples
         batch = processor(
             text=texts,
             images=all_image_inputs if all_image_inputs else None,
             padding=True,
-            return_tensors="pt"
+            return_tensors="pt",
+            max_length=4096
         )
 
-        # The labels are the input_ids, and we mask the padding tokens in the loss computation
-        labels = batch["input_ids"].clone()
-        labels[labels == processor.tokenizer.pad_token_id] = -100  #
+        input_ids = batch["input_ids"]
+        labels = input_ids.clone()
+        labels[labels == processor.tokenizer.pad_token_id] = -100
 
-        # Ignore the image token index in the loss computation (model specific)
-        if isinstance(processor, Qwen2VLProcessor):
-            logger.info("DETECTED PROCESSOR")
-            image_tokens = [151652,151653,151655]
-        else: 
-            image_tokens = [processor.tokenizer.convert_tokens_to_ids(processor.image_token)]
-        for image_token_id in image_tokens:
-            labels[labels == image_token_id] = -100
+        # Step 5: Mask image tokens
+        if hasattr(processor, "image_token"):
+            image_token_id = processor.tokenizer.convert_tokens_to_ids(processor.image_token)
+            if image_token_id is not None:
+                labels[labels == image_token_id] = -100
+        else:
+            raise ValueError("Processor does not have image_token")
+
+
+        # Step 6: Efficient batched system prompt masking
+        system_encodings = processor.tokenizer(
+            system_prompts,
+            add_special_tokens=False,
+            padding=False
+        )["input_ids"]
+
+        user_encodings = processor.tokenizer(
+            user_prompts,
+            add_special_tokens=False,
+            padding=False
+        )["input_ids"]
+
+
+        for encodings in [system_encodings, user_encodings]:
+            for i, system_ids in enumerate(encodings):
+                # Fast prefix check (common case)
+                if input_ids[i, :len(system_ids)].tolist() == system_ids:
+                    labels[i, :len(system_ids)] = -100
+                else:
+                    # Fallback: scan to find match
+                    seq = input_ids[i].tolist()
+                    for j in range(len(seq) - len(system_ids) + 1):
+                        if seq[j:j + len(system_ids)] == system_ids:
+                            labels[i, j:j + len(system_ids)] = -100
+                            break  # early exit
+
         batch["labels"] = labels
-
         return batch
 
     return collate_fn
@@ -175,7 +209,7 @@ def main(script_args, training_args, model_args):
         training_args.ddp_find_unused_parameters = True
 
         # Load processor and model for VLM
-        processor = get_processor(model_args, training_args)
+        processor = get_processor(model_args, training_args, script_args)
         model = get_model(model_args, training_args)  # This should return AutoModelForVision2Seq
         data_collator = create_vlm_collate_fn(processor)
         processing_class = processor.tokenizer

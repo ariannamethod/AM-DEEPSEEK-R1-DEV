@@ -6,6 +6,7 @@ Downloads from huggingface.co/datasets/xlangai/aguvis-stage2 and uploads to smol
 
 import re
 import gc
+import sys
 import json
 import os
 import shutil
@@ -369,7 +370,7 @@ def convert_to_new_action_space(
                 new_action_string = "\n".join(
                     [function_call.to_string() for function_call in function_calls]
                 )
-                messages[index].content = messages[index].content.replace(
+                assistant_msg[index].content = assistant_msg[index].content.replace(
                     regex_match.group(1), new_action_string
                 )
 
@@ -379,8 +380,7 @@ def convert_to_new_action_space(
 def process_subset(
     config: Dict[str, Any],
     dataset_path: str,
-    json_path: str,
-) -> Callable[[], Generator[Dict[str, Any], None, None]]:
+) -> tuple[ConversationDataList, Path]:
     """Process a single dataset subset."""
     subset_name = config["subset_name"]
 
@@ -394,31 +394,14 @@ def process_subset(
     else:
         print(f"Images folder: {images_folder}")
 
-    json_config_path = dataset_dir / json_path
+    json_config_path = dataset_dir / config["json_path"]
     with open(json_config_path, "r") as f:
         data = ConversationDataList.model_validate_json(f.read())
-        print(f"Added '{json_config_path}' with {len(data.root)} items")
+        # data = f.read()
+        print(f"Added '{json_config_path}'")
 
-    def row_generator_subset() -> Generator[Dict[str, Any], None, None]:
-        for item in tqdm(data.root):
-            # Extract image paths from the data item
-            try:
-                # Load images
-                image = load_image_from_folder(images_folder, item.image)
-                chat_message = convert_to_chat_format(item, json_path)
-                chat_message = convert_to_new_action_space(chat_message, image.size)
-                if len(chat_message) == 0:
-                    continue
+    return data, images_folder
 
-                row = DataRow.from_chat_messages(chat_message, image)
-                yield row.model_dump()
-            except Exception as e:
-                print(f"Error processing item: {e}", item)
-                continue
-
-
-
-    return row_generator_subset
 
 def row_generator(
     data: ConversationDataList, images_folder: Path, json_path: str
@@ -459,6 +442,7 @@ def make_dataset_from_original_data():
 
     dataset_configs = discover_dataset_config(dataset_path)
     converted_folder = "/fsx/amir_mahla/aguvis_converted"
+    os.makedirs(converted_folder, exist_ok=True)
     converted_repo_id = "smolagents/aguvis-stage-2"
 
     # TODO: Make it in multi processing
@@ -467,24 +451,27 @@ def make_dataset_from_original_data():
         print(config)
 
         # # Check if the subset already exists in the remote dataset
-        # subset_name = config["subset_name"]
-        # if check_subset_exists(repo_id, subset_name) and not override_existing:
-        #     print(
-        #         f"Subset '{subset_name}' already exists in {repo_id}, skipping processing."
-        #     )
-        #     continue
+        subset_name = config["subset_name"]
+        if check_subset_exists(converted_repo_id, subset_name):
+            print(
+                f"Subset '{subset_name}' already exists in {converted_repo_id}, skipping processing."
+            )
+            continue
         json_path = config["json_path"]
-        row_generator_subset = process_subset(
-            config, dataset_path, json_path
+        data, image_folder = process_subset(
+            config, dataset_path
         )
+
 
         print("Creating dataset...")
-        data = Dataset.from_generator(
-            row_generator_subset,
-        )
+        # Collect all rows first
+        rows = []
+        for row in row_generator(data, image_folder, json_path):
+            rows.append(row)
         
-        assert isinstance(data, Dataset)
-
+        # Create dataset from collected data
+        data = Dataset.from_list(rows)
+        
 
         # print("Pushing to hub...")
         # # Fix: Use config_name for subset name and split="train"
@@ -503,7 +490,7 @@ def make_dataset_from_original_data():
 #     print("\nCleaning up temporary files...")
 #     # shutil.rmtree(dataset_path, ignore_errors=True)
 #
-    # api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
+    api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
 #
 #     shutil.rmtree(converted_folder, ignore_errors=True)
 #
@@ -511,66 +498,9 @@ def make_dataset_from_original_data():
 
 
 if __name__ == "__main__":
-    # for subset in ['guiact-web-single', 'mind2web']:
-    #     dataset = load_dataset("smolagents/aguvis-stage-2", subset, split="train", revision="cc2441320a990e930d20732d6375ee2f026d6d19")
-    #     print(dataset)
-
-    #     dataset = dataset.map(change_coordinates, num_proc=32)
-
-    #     dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
-    make_dataset_from_original_data()
-
-# if __name__ == "__main__":
-#     from os import listdir
-# 
-#     dataset_path = "/fsx/amir_mahla/aguvis_raw"
-# 
-# 
-#     dataset_configs = discover_dataset_config(dataset_path)
-# 
-#     for config in dataset_configs:
-#         print(f"\n{'=' * 50}")
-#         print(config)
-# 
-#         if config["subset_name"] == "guiact-web-multi":
-#             json_path = config["json_path"]
-#             data, image_folder = process_subset(
-#                 config, dataset_path
-#             )
-# 
-#             for row in row_generator(data, image_folder, json_path):
-#                 pass
-# 
-#     repertory = "/fsx/amir_mahla/aguvis_raw"
-#     actions: set[str] = set()
-#     for file in listdir(repertory):
-#         if file.endswith(".json"):
-#             with open(f"{repertory}/{file}", "r") as f:
-#                 try:
-#                     data = ConversationDataList.model_validate_json(f.read())
-#                     print(f"Successfully parsed {file}")
-#                     for conversation in data.root:
-# 
-#                         names = parse_function_call(conversation.conversations[-1].value, pattern_to_match=["pyautogui", "mobile", "terminate", "answer"])
-# 
-#                         for i, name in enumerate(names):
-#                             actions.add(name.function_name)
-#                             if name.function_name == "pyautogui.dragTo":
-#                                 x1, y1 = names[i-1].parameters.values()
-#                                 x2, y2 = names[i].parameters.values()
-#                                 print(names[i-1].original_string)
-#                                 print(names[i].original_string)
-#                                 names[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
-#                                 names[i].original_string = names[i].to_string()
-#                                 print(names[i].original_string)
-#                                 names.pop(i-1)
-#                             chat_messages = convert_to_chat_format(conversation, file)
-# 
-#                             #test if the image is always on the first user, and start with it,
-# 
-# 
-#                 except Exception as e:
-#                     print(f"Error parsing {file}")
-#                     raise e
-#     print()
-#     # print(actions)
+     #     print(dataset)
+ 
+     #     dataset = dataset.map(change_coordinates, num_proc=32)
+ 
+     #     dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
+     make_dataset_from_original_data()

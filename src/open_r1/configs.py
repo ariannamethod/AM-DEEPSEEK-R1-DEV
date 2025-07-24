@@ -79,9 +79,18 @@ class ScriptArguments(trl.ScriptArguments):
         metadata={"help": "Force training on single GPU only, disabling distributed training."},
     )
 
+    image_resize: Optional[dict[str, int]] = field(
+        default=None,
+        metadata={"help": "Resize the image to the given minimum and maximum pixels."},
+    )
+
     def __post_init__(self):
         if self.dataset_name is None and self.dataset_mixture is None:
             raise ValueError("Either `dataset_name` or `dataset_mixture` must be provided")
+
+        if self.image_resize is not None:
+            if not isinstance(self.image_resize, dict) or "min_pixels" not in self.image_resize or "max_pixels" not in self.image_resize:
+                raise ValueError("image_resize must be a dictionary with a 'min_pixels' and 'max_pixels' key.")
 
         if self.dataset_mixture is not None:
             if not isinstance(self.dataset_mixture, dict) or "datasets" not in self.dataset_mixture:

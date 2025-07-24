@@ -8,6 +8,19 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
 
+    @staticmethod
+    def from_conversation_list(data: list[dict[str, str]]) -> list["ChatMessage"]:
+        messages = []
+        for item in data:
+            if item["from"] == "system":
+                role = "system"
+            elif item["from"] == "human":
+                role = "user"
+            else:
+                role = "assistant"
+            messages.append(ChatMessage(role=role, content=item["value"]))
+        return messages
+
 
 class ConversationEntry(BaseModel):
     from_: Literal["system", "human", "gpt"]  = Field(alias="from")
@@ -67,3 +80,11 @@ class DataRow(BaseModel):
                 assistant = message.content
 
         return cls(system=system, user=user, assistant=assistant, image=image) # type: ignore
+
+    def to_model_dump(self) -> dict:
+        return {
+            "system": self.system,
+            "user": self.user,
+            "assistant": self.assistant,
+            "image": self.image,
+        }
