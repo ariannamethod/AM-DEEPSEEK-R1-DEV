@@ -15,127 +15,24 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Generator, Callable, Literal
 from tqdm import tqdm
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, concatenate_datasets
 from dotenv import load_dotenv
 from huggingface_hub import HfApi, login, snapshot_download
 from collections import defaultdict
 from PIL import Image
 import tarfile
+from itertools import islice
+import multiprocessing as mp
+from multiprocessing import Pool, Manager
 from prompts import OS_SYSTEM_PROMPT, MOBILE_SYSTEM_PROMPT
 from models import ConversationDataList, ConversationData, ChatMessage, DataRow
 from function_parser import parse_function_call
 from action_conversion import action_conversion
+from pydantic import BaseModel
+from config import config_dict_stage_1, config_dict_stage_2, MOBILE_FILE
 
 
 api = HfApi()
-
-# aguvis json file with mobile action space
-MOBILE_FILE = [
-    "android_control.json",
-    "gui-odyssey-l1.json",
-    "aitw-l3.json",
-    "coat.jsonamex-l2.json",
-    "amex-l1.json",
-    "amex-l3.json",
-    "gui-odyssey-l3.json",
-    "aitw-l1.json",
-    "aitw-l2.json",
-    "gui-odyssey-l2.json",
-]
-
-# TODO: some of the mappings above must be wrong because the conversion fails for some subsets
-config_dict = [
-    # {
-    #     "json_path": "mind2web-l1.json",
-    #     "images_folder": "mind2web/",
-    #     "sampling_strategy": "all",
-    # },
-    # {
-    #     "json_path": "mind2web-l2.json",
-    #     "images_folder": "mind2web/",
-    #     "sampling_strategy": "all",
-    # },
-    {
-        "json_path": "mind2web-l3.json",
-        "images_folder": "mind2web/",
-        "sampling_strategy": "all",
-    },
-    {
-        "json_path": "guiact-web-single.json",
-        "images_folder": "guiact-web-single/images/",
-        "sampling_strategy": "all",
-    },
-    # {
-    #     "json_path": "guiact-web-multi-l1.json",
-    #     "images_folder": "guiact-web-multi-v2/images",
-    #     "sampling_strategy": "all",
-    # },
-    {
-        "json_path": "guiact-web-multi-l3.json",
-        "images_folder": "guiact-web-multi-v2/images",
-        "sampling_strategy": "all",
-    },
-    # {
-    #     "json_path": "miniwob-l1.json",
-    #     "images_folder": "images",
-    #     "sampling_strategy": "all",
-    # },
-    {
-        "json_path": "miniwob-l3.json",
-        "images_folder": "images",
-        "sampling_strategy": "all",
-    },
-    {
-        "json_path": "coat.json",
-        "images_folder": "coat/images/",
-        "sampling_strategy": "all",
-    },
-    {
-        "json_path": "android_control.json",
-        "images_folder": "android_control/images/",
-        "sampling_strategy": "all",
-    },
-    # {
-    #     "json_path": "gui-odyssey-l1.json",
-    #     "images_folder": "gui-odyssey/images/",
-    #     "sampling_strategy": "random:33%",
-    # },
-    # {
-    #     "json_path": "gui-odyssey-l2.json",
-    #     "images_folder": "gui-odyssey/images/",
-    #     "sampling_strategy": "random:33%",
-    # },
-    {
-        "json_path": "gui-odyssey-l3.json",
-        "images_folder": "gui-odyssey/images/",
-        "sampling_strategy": "random:33%",
-    },
-    # {
-    #     "json_path": "amex-l1.json",
-    #     "images_folder": "amex/images/",
-    #     "sampling_strategy": "random:33%",
-    # },
-    # {
-    #     "json_path": "amex-l2.json",
-    #     "images_folder": "amex/images/",
-    #     "sampling_strategy": "random:33%",
-    # },
-    {
-        "json_path": "amex-l3.json",
-        "images_folder": "amex/images/",
-        "sampling_strategy": "random:33%",
-    },
-    # {
-    #     "json_path": "aitw-l1.json",
-    #     "images_folder": "aitw-v1/images",
-    #     "sampling_strategy": "all",
-    # },
-    {
-        "json_path": "aitw-l3.json",
-        "images_folder": "aitw-v1/images/",
-        "sampling_strategy": "all",
-    },
-]
 
 
 def authenticate_huggingface():
@@ -148,7 +45,7 @@ def authenticate_huggingface():
         raise ValueError("HF_TOKEN environment variable not set.")
 
 
-def discover_dataset_config(dataset_path: str) -> List[Dict[str, Any]]:
+def discover_dataset_config(dataset_path: str, config_dict: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Discover dataset configuration by scanning the data directory."""
     dataset_dir = Path(dataset_path)
     train_dir = dataset_dir
@@ -279,7 +176,9 @@ def load_image_from_folder(images_folder: Path, img_path: str) -> Image.Image:
     """Load images from the specified folder."""
     full_path = images_folder / img_path
     img = Image.open(full_path)
-    return img
+    new_img = img.copy()
+    img.close()
+    return new_img
 
 
 def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
@@ -302,9 +201,10 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
                 .replace("Thought: ", "")
             )
             if i == len(messages) - 1:
-                content = (
-                    "<code>\n" + content.strip() + "\n</code>"
-                )
+                # content = (
+                #     "<code>\n" + content.strip() + "\n</code>"
+                # )
+                content = content.strip()
             else:
                 # TODO: Check if there is always only 2 assistants
                 content = (
@@ -320,7 +220,7 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
             # Need to fuse both messages
             messages[i - 1].content += messages[i].content
             messages.pop(i)
-
+    
     return messages
 
 
@@ -331,36 +231,58 @@ def convert_to_chat_format(
     # This is a placeholder - you'll need to adapt this based on the actual data structure
     # The exact conversion depends on how the original data is structured
     chat_messages = data.to_chat_messages()
+    # mobile = json_path in open("mobile_files.txt", "r").read()
+    # os = json_path in open("os_files.txt", "r").read()
+    # if not mobile and not os:
+    #     for message in chat_messages:
+    #         if mobile and os:
+    #             break
+    #         if message.role == "assistant":
+    #             if not mobile and "mobile" in message.content:
+    #                 with open("mobile_files.txt", "a") as mobile_files:
+    #                     mobile_files.write(json_path + "\n")
+    #                 mobile = True
+    #             if not os and "pyautogui" in message.content:
+    #                 with open("os_files.txt", "a") as os_files:
+    #                     os_files.write(json_path + "\n")
+    #                 os = True
+            
     chat_messages = convert_to_code_agent_format(chat_messages, json_path)
     return chat_messages
 
 
 def convert_to_new_action_space(
-    messages: list[ChatMessage], resolution: tuple[int, int]
+    messages: list[ChatMessage], resolution: tuple[int, int], code_format: bool = True
 ) -> list[ChatMessage]:
-    regex_match = None
+    regex_match: re.Match | str | None = None
     index = -1
     regex = r"<code>\n(.*?)\n</code>"
     assistant_msg = [message for message in messages if message.role == "assistant"]
     if assistant_msg:
         for i, msg in enumerate(assistant_msg):
-            regex_match = re.search(regex, msg.content, re.DOTALL)
+
+            if code_format:
+                regex_match = re.search(regex, msg.content, re.DOTALL)
+            elif "pyautogui" in msg.content or "mobile" in msg.content or "terminate" in msg.content or "answer" in msg.content:
+                regex_match = msg.content
+                
             index = i
             if regex_match is not None:
                 break
         if regex_match is not None:
             function_calls = parse_function_call(
-                regex_match.group(1),
+                regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match,
                 pattern_to_match=["pyautogui", "mobile", "terminate", "answer"],
             )
-            
+
+
             if len(function_calls) > 0:
 
                 for i, function_call in enumerate(deepcopy(function_calls)):
                     
-                    if function_call.function_name == "pyautogui.dragTo":
-                        x1, y1 = function_calls[i-1].parameters.values()
-                        x2, y2 = function_calls[i].parameters.values()
+                    if function_call.function_name == "pyautogui.dragTo" and not isinstance(list(function_calls[i].parameters.values())[0], (list, tuple)):
+                        x1, y1 = islice(function_calls[i-1].parameters.values(), 2)
+                        x2, y2 = islice(function_calls[i].parameters.values(), 2)
                         function_calls[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
                         function_calls[i].original_string = function_calls[i].to_string()
                         function_calls.pop(i-1)
@@ -371,8 +293,13 @@ def convert_to_new_action_space(
                     [function_call.to_string() for function_call in function_calls]
                 )
                 assistant_msg[index].content = assistant_msg[index].content.replace(
-                    regex_match.group(1), new_action_string
+                    regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match, new_action_string
                 )
+                if "pyautogui" in assistant_msg[index].content:
+                    raise Exception("pyautogui in assistant_msg[index].content: " + assistant_msg[index].content)
+            else:
+                print(regex_match)
+
 
     return messages
 
@@ -413,84 +340,153 @@ def row_generator(
             # Load images
             image = load_image_from_folder(images_folder, item.image)
             chat_message = convert_to_chat_format(item, json_path)
-            chat_message = convert_to_new_action_space(chat_message, image.size)
+            chat_message = convert_to_new_action_space(chat_message, image.size, code_format=False)
             if len(chat_message) == 0:
                 continue
 
             row = DataRow.from_chat_messages(chat_message, image)
-            yield row.model_dump()
+            yield row.model_dump(exclude_none=True)
+            del image
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"Error processing item: {e}", item)
             continue
 
 
-def make_dataset_from_original_data():
+class DatasetConfig(BaseModel):
+    huggingface_repo_id: str
+    local_path: str
+    config_dict: List[Dict[str, Any]]
+    smolagents_repo_id: str
+
+
+def process_single_config(config: Dict[str, Any], dataset_path: str, smolagents_repo_id: str) -> bool:
+    """Process a single config in a separate process."""
+    try:
+        # Authenticate in this process
+        authenticate_huggingface()
+        
+        print(f"\n{'=' * 50}")
+        print(f"Processing config: {config}")
+
+        # Check if the subset already exists in the remote dataset
+        subset_name = config["subset_name"]
+        # if check_subset_exists(smolagents_repo_id, subset_name):
+        #     print(
+        #         f"Subset '{subset_name}' already exists in {smolagents_repo_id}, skipping processing."
+        #     )
+        #     return True
+
+        json_path = config["json_path"]
+        data, image_folder = process_subset(config, dataset_path)
+
+        # Collect all rows first
+        rows = []
+        datasets = []
+        for row in row_generator(data, image_folder, json_path):
+            rows.append(row)
+            if len(rows) > 20000:
+                print("Creating batch dataset")
+                dataset = Dataset.from_list(rows)
+                datasets.append(dataset)
+                rows = []
+                gc.collect()
+        
+        if len(rows) > 0:
+            # Create dataset from collected data
+            dataset = Dataset.from_list(rows)
+            datasets.append(dataset)
+            rows = []
+
+        dataset_to_push = concatenate_datasets(datasets)
+        
+        # Push to hub
+        dataset_to_push.push_to_hub(
+            smolagents_repo_id,
+            config_name=config["subset_name"],  # This sets the subset name
+            split="train",  # This should be "train" not the subset name
+        )
+
+        print(f"Processed and uploaded subset: {config['subset_name']}")
+
+        # Force garbage collection to manage memory
+        gc.collect()
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error processing config {config.get('subset_name', 'unknown')}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def make_dataset_from_original_data(dataset_config: DatasetConfig, max_processes: int | None = None):
     """Main function to orchestrate the entire process."""
     load_dotenv(override=True)
 
-    print("Starting aguvis-stage2 dataset processing...")
+    print(f"Starting {dataset_config.smolagents_repo_id} dataset processing...")
 
     # Step 0: Authenticate with HuggingFace Hub
     authenticate_huggingface()
 
     dataset_path = download_dataset(
-        "xlangai/aguvis-stage2", "/fsx/amir_mahla/aguvis_raw"
+        dataset_config.huggingface_repo_id, dataset_config.local_path
     )
 
     # extract_zip_files(dataset_path)
     # extract_tar_parts_grouped(dataset_path)
 
-    dataset_configs = discover_dataset_config(dataset_path)
-    converted_folder = "/fsx/amir_mahla/aguvis_converted"
-    os.makedirs(converted_folder, exist_ok=True)
-    converted_repo_id = "smolagents/aguvis-stage-2"
-
-    # TODO: Make it in multi processing
-    for config in dataset_configs:
-        print(f"\n{'=' * 50}")
-        print(config)
-
-        # # Check if the subset already exists in the remote dataset
-        subset_name = config["subset_name"]
-        if check_subset_exists(converted_repo_id, subset_name):
-            print(
-                f"Subset '{subset_name}' already exists in {converted_repo_id}, skipping processing."
-            )
-            continue
-        json_path = config["json_path"]
-        data, image_folder = process_subset(
-            config, dataset_path
-        )
-
-
-        print("Creating dataset...")
-        # Collect all rows first
-        rows = []
-        for row in row_generator(data, image_folder, json_path):
-            rows.append(row)
-        
-        # Create dataset from collected data
-        data = Dataset.from_list(rows)
-        
-
-        # print("Pushing to hub...")
-        # # Fix: Use config_name for subset name and split="train"
-        data.push_to_hub(
-            "smolagents/aguvis-stage-2",
-            config_name=config["subset_name"],  # This sets the subset name
-            split="train",  # This should be "train" not the subset name
-        )
-
-        # print(f"Processed and uploaded subset: {config['subset_name']}")
-
-        # # Force garbage collection to manage memory
-        gc.collect()
+    dataset_configs = discover_dataset_config(dataset_path, dataset_config.config_dict)
+    converted_repo_id = dataset_config.smolagents_repo_id
+    
+    # Use multiprocessing to process configs in parallel
+    available_cpus = mp.cpu_count()
+    if max_processes is None:
+        max_processes = available_cpus
+    num_processes = min(max_processes, len(dataset_configs))
+    print(f"Using {num_processes} processes (out of {available_cpus} available CPUs) to process {len(dataset_configs)} configs")
+    
+    # Prepare arguments for multiprocessing
+    process_args = [
+        (config, dataset_path, converted_repo_id) 
+        for config in dataset_configs if config["subset_name"] == "ricoig16k"
+    ]
+    
+    # Process configs in parallel with progress tracking
+    print(f"Starting parallel processing of {len(dataset_configs)} configs...")
+    try:
+        with Pool(processes=num_processes) as pool:
+            results = []
+            for i, result in enumerate(pool.starmap(process_single_config, process_args)):
+                results.append(result)
+                print(f"Completed {i+1}/{len(dataset_configs)} configs")
+    except Exception as e:
+        print(f"Multiprocessing failed: {e}")
+        print("Falling back to sequential processing...")
+        results = []
+        for i, args in enumerate(process_args):
+            result = process_single_config(*args)
+            results.append(result)
+            print(f"Completed {i+1}/{len(dataset_configs)} configs (sequential)")
+    
+    # Check results
+    successful = sum(results)
+    total = len(dataset_configs)
+    print(f"\nProcessing complete: {successful}/{total} configs processed successfully")
+    
+    if successful < total:
+        failed_count = total - successful
+        print(f"Warning: {failed_count} configs failed to process. Check the logs above for details.")
+    else:
+        print("All configs processed successfully!")
 
 #     # Cleanup
 #     print("\nCleaning up temporary files...")
 #     # shutil.rmtree(dataset_path, ignore_errors=True)
 #
-    api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
+#     # api.upload_large_folder(folder_path=converted_folder, repo_id="smolagents/aguvis-stage-2", repo_type="dataset")
 #
 #     shutil.rmtree(converted_folder, ignore_errors=True)
 #
@@ -498,9 +494,18 @@ def make_dataset_from_original_data():
 
 
 if __name__ == "__main__":
-     #     print(dataset)
- 
-     #     dataset = dataset.map(change_coordinates, num_proc=32)
- 
-     #     dataset.push_to_hub("smolagents/aguvis-stage-2", subset, split="train")
-     make_dataset_from_original_data()
+    dataset_config_1 = DatasetConfig(
+        huggingface_repo_id="xlangai/aguvis-stage1",
+        local_path="/fsx/amir_mahla/aguvis_raw_stage_1",
+        config_dict=config_dict_stage_1,
+        smolagents_repo_id="smolagents/aguvis-stage-1",
+    )
+    dataset_config_2 = DatasetConfig(
+        huggingface_repo_id="xlangai/aguvis-stage2",
+        local_path="/fsx/amir_mahla/aguvis_raw_stage_2",
+        config_dict=config_dict_stage_2,
+        smolagents_repo_id="smolagents/aguvis-stage-2",
+    )
+    # You can specify max_processes to limit the number of parallel processes
+    # make_dataset_from_original_data(dataset_config_1, max_processes=4)
+    make_dataset_from_original_data(dataset_config_1, 4)

@@ -56,7 +56,7 @@ from PIL import Image
 from transformers import Qwen2VLProcessor
 from typing import Any
 from scripts.agents.function_parser import parse_function_call
-from scripts.agents.qwenvl_collator import create_vlm_collate_fn
+from scripts.agents.smolvlm2_collator import create_vlm_collate_fn
 
 logger = logging.getLogger(__name__)
 

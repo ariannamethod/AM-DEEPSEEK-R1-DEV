@@ -28,12 +28,12 @@ from copy import deepcopy
 
 def convert_to_pixel_coordinates(action: FunctionCall, resolution: tuple[int, int]) -> None:
     if "arg_0" in action.parameters:
-        if isinstance(action.parameters["arg_0"], list):
+        if isinstance(action.parameters["arg_0"], (list, tuple)):
             action.parameters["arg_0"] = (int(action.parameters["arg_0"][0] * resolution[0]), int(action.parameters["arg_0"][1] * resolution[1]))
         else:
             action.parameters["arg_0"] = int(action.parameters["arg_0"] * resolution[0])
     if "arg_1" in action.parameters:
-        if isinstance(action.parameters["arg_1"], list):
+        if isinstance(action.parameters["arg_1"], (list, tuple)):
             action.parameters["arg_1"] = (int(action.parameters["arg_1"][0] * resolution[0]), int(action.parameters["arg_1"][1] * resolution[1]))
         else:
             action.parameters["arg_1"] = int(action.parameters["arg_1"] * resolution[1])

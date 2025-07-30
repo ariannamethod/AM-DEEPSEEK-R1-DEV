@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer, AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer, AutoProcessor, AutoModelForImageTextToText
 
 from trl import ModelConfig, get_kbit_device_map, get_quantization_config
 
@@ -35,7 +35,7 @@ def get_processor(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig
     return processor
 
 
-def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> AutoModelForCausalLM | AutoModelForVision2Seq:
+def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> AutoModelForCausalLM | AutoModelForImageTextToText:
     """Get the model - supports both text-only and vision-language models"""
     torch_dtype = (
         model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
@@ -54,7 +54,7 @@ def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) ->
     # Check if this is a VLM model using the explicit flag
     if hasattr(training_args, 'vision_model') and training_args.vision_model:
         # Load as vision-language model
-        model = AutoModelForVision2Seq.from_pretrained(
+        model = AutoModelForImageTextToText.from_pretrained(
             model_args.model_name_or_path,
             **model_kwargs,
         )

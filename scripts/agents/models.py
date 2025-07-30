@@ -41,6 +41,8 @@ class ConversationEntry(BaseModel):
 class ConversationData(BaseModel):
     image: str 
     conversations: List[ConversationEntry]
+    recipient: Optional[str] = None
+    end_turn: Optional[bool] = None
 
     @field_validator("image", mode="before")
     def validate_image(cls, v):
@@ -60,7 +62,7 @@ class ConversationDataList(RootModel[List[ConversationData]]):
     pass
 
 class DataRow(BaseModel):
-    system: str 
+    system: str | None
     user: str
     assistant: str
     image: Image.Image
