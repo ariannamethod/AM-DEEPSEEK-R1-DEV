@@ -34,12 +34,13 @@ gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: false
 hub_model_id: smolagents/SmolVLM2-2.2B-Instruct-Agentic-GUI
+hub_model_revision: max-resolution-1152-without-system
 hub_strategy: end
 push_to_hub: true
 log_level: info
 logging_steps: 5
 logging_strategy: steps
-output_dir: /fsx/amir_mahla/smolagents-SmolVLM2-2.2B-Instruct-Agentic-GUI
+output_dir: /fsx/amir_mahla/smolagents-SmolVLM2-2.2B-Instruct-Agentic-GUI-max-resolution-1152-without-system
 overwrite_output_dir: true
 report_to:
 - wandb

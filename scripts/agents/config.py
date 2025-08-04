@@ -13,6 +13,36 @@ MOBILE_FILE = [
     "gui-odyssey-l2.json",
 ]
 
+# Processing:  guienv
+# 
+# Duplicate images in guienv.json. difference: 257578
+# len(images_path): 327972
+# len(images_set_path): 70394
+# user/assistant by image: 3.6590902633747193
+# 
+# 
+# Processing:  ricosca
+# 
+# Duplicate images in ricosca.json. difference: 155066
+# len(images_path): 173212
+# len(images_set_path): 18146
+# user/assistant by image: 8.54546456519343
+# 
+# 
+# Processing:  ui_refexp
+# 
+# Duplicate images in ui_refexp.json. difference: 10978
+# len(images_path): 15624
+# len(images_set_path): 4646
+# user/assistant by image: 2.3628928110202323
+# 
+# Processing:  widget_captioning
+# 
+# Duplicate images in widget_captioning.json. difference: 87017
+# len(images_path): 101426
+# len(images_set_path): 14409
+# user/assistant by image: 6.039072801721146
+
 config_dict_stage_1 = [
     {
         "json_path": "guienv.json",
@@ -48,6 +78,36 @@ config_dict_stage_1 = [
     },
     
 ]
+
+
+# Processing:  guiact-web-single
+# 
+# Duplicate images in guiact-web-single.json. difference: 54134
+# len(images_path): 67396
+# len(images_set_path): 13262
+# user/assistant by image: 4.081888101342181
+# 
+# Processing:  guiact-web-multi-l3
+# 
+# Duplicate images in guiact-web-multi-l3.json. difference: 24
+# len(images_path): 16704
+# len(images_set_path): 16680
+# user/assistant by image: 0.0014388489208633094
+# 
+# Processing:  miniwob-l3
+# 
+# Duplicate images in miniwob-l3.json. difference: 161
+# len(images_path): 9826
+# len(images_set_path): 9665
+# user/assistant by image: 0.016658044490429385
+# 
+# Processing:  gui-odyssey-l3
+# 
+# Duplicate images in gui-odyssey-l3.json. difference: 24
+# len(images_path): 118282
+# len(images_set_path): 118258
+# user/assistant by image: 0.0002029461008980365
+
 
 config_dict_stage_2 = [
     {

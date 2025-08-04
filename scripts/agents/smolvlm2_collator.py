@@ -64,40 +64,46 @@ def resize_images_in_messages(batch_messages) -> list[Image.Image]:
 def create_vlm_collate_fn(processor, script_args):
     """Optimized collate function for VLM training that masks system prompt tokens."""
 
-    def collate_fn(examples: list[dict[str, str | Image.Image]]):
-        batch_messages = []
-        system_prompts = []
-        user_prompts = []
+    def collate_fn(examples: dict[str, list | str | Image.Image]):
+        batch_messages: list[list[dict[str, list | str | Image.Image]]] = []
+        system_prompts: list[str] = []
+        user_prompts: list[list[str]] = []
+        all_image_inputs: list[list[Image.Image]] = []
         for example in examples:
-            system = "\n" + example["system"]
-            user = "\n" + example["user"]
-            assistant = example["assistant"]
-            image = example["image"]
+
+            images = example["images"]
+            users = []
+
+            for text in example["texts"]:
+
+                sample = []
+                if "system" in text:
+                    system = "\n" + text["system"]
+                    sample.append({"role": "system", "content": [{"type": "text", "text": system}]})
+                    system_prompts.append(system)
+
+
+                user = "\n" + text["user"]
+                users.append(user)
+                if not sample:
+                    sample.append({"role": "user", "content": [
+                                    {"type": "image", "image": images[0]},
+                                    {"type": "text", "text": user},
+                                ]})
+                else:
+                    sample.append({"role": "user", "content": [
+                                    {"type": "text", "text": user},
+                                ]})
+
+                assistant = text["assistant"]
+                sample.append({"role": "assistant", "content": [{"type": "text", "text": assistant}]})
 
             system_prompts.append(system)
-            user_prompts.append(user)
-            batch_messages.append(
-                [
-                    {"role": "system", "content": [
-                            {"type": "text", "text": system}
-                        ]
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": image},
-                            {"type": "text", "text": user},
-                        ],
-                    },
-                    {"role": "assistant", "content": [
-                            {"type": "text", "text": assistant}
-                        ]
-                    },
-                ]
-            )
+            user_prompts.append(users)
+            batch_messages.append(sample)
+            all_image_inputs.append(images)
 
-        all_image_inputs = []
-        all_image_inputs = resize_images_in_messages(batch_messages)
+        # all_image_inputs = resize_images_in_messages(batch_messages)
 
 
         texts = [
@@ -136,7 +142,8 @@ def create_vlm_collate_fn(processor, script_args):
             user_prompts, add_special_tokens=False, padding=False
         )["input_ids"]
 
-        for encodings in [system_encodings, user_encodings]:
+        for sample in [system_encodings, user_encodings]:
+            encodings = list()
             for i, system_ids in enumerate(encodings):
                 if input_ids[i, : len(system_ids)].tolist() == system_ids:
                     labels[i, : len(system_ids)] = -100

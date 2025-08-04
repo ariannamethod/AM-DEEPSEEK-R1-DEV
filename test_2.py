@@ -13,6 +13,29 @@ def read_json(path: str) -> list[ConversationData]:
         data = ConversationDataList.model_validate_json(f.read())
     return data.root
 
+def check_duplicate_images(data: list[ConversationData], json_path: str) -> int:
+    images_set_path = set()
+    images_path = []
+    for example in data:
+
+        images_set_path.add(example.image)
+        images_path.append(example.image)
+
+    print()
+    if len(images_set_path) != len(images_path):
+        print(f"Duplicate images in {json_path}. difference: {len(images_path) - len(images_set_path)}")
+        print(f"len(images_path): {len(images_path)}")
+        print(f"len(images_set_path): {len(images_set_path)}")
+        print(f"user/assistant by image: {(len(images_path) - len(images_set_path)) / len(images_set_path)}")
+    else:
+        print(f"No duplicate images in {json_path}")
+        print(f"len(images_path): {len(images_path)}")
+        print(f"len(images_set_path): {len(images_set_path)}")
+        print(f"user/assistant by image: {(len(images_path) - len(images_set_path)) / len(images_set_path)}")
+    print()
+
+    return len(images_path) - len(images_set_path), len(images_path) 
+
 
 def get_function_call_names(
     data: ConversationData,
@@ -256,16 +279,16 @@ if __name__ == "__main__":
     #         "max_pixels": 1003520,
     #     }
 
-    processor = AutoProcessor.from_pretrained(
-        "HuggingFaceTB/SmolVLM2-2.2B-Instruct", model_revision="main"
-    )
-    # # processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", model_revision="main", min_pixels=200704, max_pixels=1003520)
-    collate_fn = create_vlm_collate_fn(processor)
-    max = 0
-    answer_token = 0
-    user_token = 0
-    system_token = 0
-    total_token = 0
+    # processor = AutoProcessor.from_pretrained(
+    #     "HuggingFaceTB/SmolVLM2-2.2B-Instruct", model_revision="main"
+    # )
+    # # # processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct", model_revision="main", min_pixels=200704, max_pixels=1003520)
+    # collate_fn = create_vlm_collate_fn(processor)
+    # max = 0
+    # answer_token = 0
+    # user_token = 0
+    # system_token = 0
+    # total_token = 0
     # Aguvis_stage_2
     #    datasets = load_dataset("smolagents/aguvis-stage-2", dataset_name, split="train")
     #    for i, example in enumerate(datasets):
@@ -279,38 +302,37 @@ if __name__ == "__main__":
 
     for config in config_dict_stage_1:
         dataset_name = config["json_path"].split(".")[0]
-        if dataset_name != "seeclick":
-            continue
-        data = load_dataset("smolagents/aguvis-stage-1", dataset_name, split="train")
-        print(f"Processing {dataset_name}")
-        # data: list[ConversationData] = read_json(f"/fsx/amir_mahla/aguvis_raw_stage_1/{dataset_name}.json")
+        print("Processing: ", dataset_name)
+        data: list[ConversationData] = read_json(f"/fsx/amir_mahla/aguvis_raw_stage_1/{dataset_name}.json")
+        diff, original_length = check_duplicate_images(data, f"{dataset_name}.json")
+        token_count += original_length - diff
         # has_os_action_space = False
         # has_mobile_action_space = False
-        current_dataset_token_count = 0
-        current_dataset_assistant_token_count = 0
-        for example in data:
-            # token_count += get_token_count(example, processor)
-            input_ids, assistant_encodings = collate_fn([example])
-            exit()
-            assistant_token_count += len(assistant_encodings)
-            total_token += len(input_ids)
-            current_dataset_token_count += len(input_ids)
-            current_dataset_assistant_token_count += len(assistant_encodings)
-            # function_names, has_os_action_space, has_mobile_action_space = get_function_call_names(example, f"data/aguvis_raw/{dataset_name}.json", has_os_action_space, has_mobile_action_space)
-            # for function_name in function_names:
-            #     function_call_names.add(function_name)
+        # current_dataset_token_count = 0
+        # current_dataset_assistant_token_count = 0
+        # for example in data:
+        #     # token_count += get_token_count(example, processor)
+        #     input_ids, assistant_encodings = collate_fn([example])
+        #     exit()
+        #     assistant_token_count += len(assistant_encodings)
+        #     total_token += len(input_ids)
+        #     current_dataset_token_count += len(input_ids)
+        #     current_dataset_assistant_token_count += len(assistant_encodings)
+        #     # function_names, has_os_action_space, has_mobile_action_space = get_function_call_names(example, f"data/aguvis_raw/{dataset_name}.json", has_os_action_space, has_mobile_action_space)
+        #     # for function_name in function_names:
+        #     #     function_call_names.add(function_name)
 
-        print(
-            "Dataset: ",
-            dataset_name,
-            "Total token: ",
-            current_dataset_token_count,
-            "Total assistant token: ",
-            current_dataset_assistant_token_count,
-        )
+        # print(
+        #     "Dataset: ",
+        #     dataset_name,
+        #     "Total token: ",
+        #     current_dataset_token_count,
+        #     "Total assistant token: ",
+        #     current_dataset_assistant_token_count,
+        # )
 
-    print("Total token: ", total_token)
-    print("Total assistant token: ", assistant_token_count)
+    # print("Total token: ", total_token)
+    # print("Total assistant token: ", assistant_token_count)
 
     # print()
     # for function_call_name in function_call_names:

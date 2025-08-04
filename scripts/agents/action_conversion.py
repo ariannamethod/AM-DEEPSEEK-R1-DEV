@@ -29,14 +29,30 @@ from copy import deepcopy
 def convert_to_pixel_coordinates(action: FunctionCall, resolution: tuple[int, int]) -> None:
     if "arg_0" in action.parameters:
         if isinstance(action.parameters["arg_0"], (list, tuple)):
-            action.parameters["arg_0"] = (int(action.parameters["arg_0"][0] * resolution[0]), int(action.parameters["arg_0"][1] * resolution[1]))
+            action.parameters["from_coord"] = (int(action.parameters["arg_0"][0] * resolution[0]), int(action.parameters["arg_0"][1] * resolution[1]))
         else:
-            action.parameters["arg_0"] = int(action.parameters["arg_0"] * resolution[0])
+            action.parameters["x"] = int(action.parameters["arg_0"] * resolution[0])
+        del action.parameters["arg_0"]
     if "arg_1" in action.parameters:
         if isinstance(action.parameters["arg_1"], (list, tuple)):
-            action.parameters["arg_1"] = (int(action.parameters["arg_1"][0] * resolution[0]), int(action.parameters["arg_1"][1] * resolution[1]))
+            action.parameters["to_coord"] = (int(action.parameters["arg_1"][0] * resolution[0]), int(action.parameters["arg_1"][1] * resolution[1]))
         else:
-            action.parameters["arg_1"] = int(action.parameters["arg_1"] * resolution[1])
+            action.parameters["y"] = int(action.parameters["arg_1"] * resolution[1])
+        del action.parameters["arg_1"]
+
+def change_argument_name(action: FunctionCall) -> None:
+    if "arg_0" in action.parameters:
+        if isinstance(action.parameters["arg_0"], (list, tuple)):
+            action.parameters["from_coord"] = (float(action.parameters["arg_0"][0]), float(action.parameters["arg_0"][1]))
+        else:
+            action.parameters["x"] = float(action.parameters["arg_0"])
+        del action.parameters["arg_0"]
+    if "arg_1" in action.parameters:
+        if isinstance(action.parameters["arg_1"], (list, tuple)):
+            action.parameters["to_coord"] = (float(action.parameters["arg_1"][0]), float(action.parameters["arg_1"][1]))
+        else:
+            action.parameters["y"] = float(action.parameters["arg_1"])
+        del action.parameters["arg_1"]
 
 
 def rename_parameters(action: FunctionCall) -> None:
@@ -72,39 +88,46 @@ def action_conversion(
 
         elif action.function_name == "mobile.swipe":
             actions[i].function_name = "swipe"
-            convert_to_pixel_coordinates(actions[i], resolution)
+            change_argument_name(actions[i])
 
         elif action.function_name == "mobile.back":
             actions[i].function_name = "navigate_back"
 
         elif action.function_name == "mobile.long_press":
             actions[i].function_name = "long_press"
-            convert_to_pixel_coordinates(actions[i], resolution)
+            change_argument_name(actions[i])
 
         elif action.function_name in ["mobile.terminate", "answer"]:
             actions[i].function_name = "final_answer"
 
         elif action.function_name == "mobile.wait":
             actions[i].function_name = "wait"
+            if "arg_0" in actions[i].parameters:
+                actions[i].parameters["seconds"] = int(actions[i].parameters["arg_0"])
+                del actions[i].parameters["arg_0"]
 
         # OS ACTION
         elif action.function_name == "pyautogui.click":
             actions[i].function_name = "click"
-            convert_to_pixel_coordinates(actions[i], resolution)
+            change_argument_name(actions[i])
 
         elif action.function_name == "pyautogui.doubleClick":
             actions[i].function_name = "double_click"
-            if "arg_0" in actions[i].parameters:
-                actions[i].parameters["arg_0"] = int(actions[i].parameters["arg_0"] * resolution[0])
-            if "arg_1" in actions[i].parameters:
-                actions[i].parameters["arg_1"] = int(actions[i].parameters["arg_1"] * resolution[1])
+            change_argument_name(actions[i])
+
+        elif action.function_name == "pyautogui.rightClick":
+            actions[i].function_name = "right_click"
+            change_argument_name(actions[i])
 
         elif action.function_name in ["pyautogui.hotkey", "pyautogui.press"]:
             actions[i].function_name = "press"
+            if "arg_0" in actions[i].parameters:
+                actions[i].parameters["keys"] = actions[i].parameters["arg_0"]
+                del actions[i].parameters["arg_0"]
 
         elif action.function_name == "pyautogui.moveTo":
             actions[i].function_name = "move_mouse"
-            convert_to_pixel_coordinates(actions[i], resolution)
+            change_argument_name(actions[i])
 
         elif action.function_name == "pyautogui.write":
             actions[i].function_name = "type"
@@ -113,20 +136,21 @@ def action_conversion(
             arg_value = actions[i].parameters["arg_0"]
             if arg_value < 0:
                 if action.function_name == "pyautogui.hscroll":
-                    actions[i].parameters["arg_0"] = "left"
+                    actions[i].parameters["direction"] = "left"
                 else:
-                    actions[i].parameters["arg_0"] = "up"
+                    actions[i].parameters["direction"] = "up"
             else:
                 if action.function_name == "pyautogui.hscroll":
-                    actions[i].parameters["arg_0"] = "right"
+                    actions[i].parameters["direction"] = "right"
                 else:
-                    actions[i].parameters["arg_0"] = "down"
+                    actions[i].parameters["direction"] = "down"
+            del actions[i].parameters["arg_0"]
             actions[i].function_name = "scroll"
-            actions[i].parameters["arg_1"] = int(abs(arg_value * 100))
+            actions[i].parameters["amount"] = int(abs(arg_value * 100))
 
         elif action.function_name == "pyautogui.dragTo":
             actions[i].function_name = "drag"
-            convert_to_pixel_coordinates(actions[i], resolution)
+            change_argument_name(actions[i])
 
         else:
             ValueError("Error FonctionCall Formatting")

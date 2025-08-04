@@ -181,7 +181,7 @@ def load_image_from_folder(images_folder: Path, img_path: str) -> Image.Image:
     return new_img
 
 
-def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
+def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str, reasoning: bool):
     for i, message in enumerate(messages):
         content = message.content
 
@@ -192,7 +192,7 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
                 content = OS_SYSTEM_PROMPT
 
         if message.role == "user":
-            content = content.replace("<image>", "")
+            content = content.replace("<image>\n", "").replace("<image>", "")
 
         elif message.role == "assistant":
             content = (
@@ -200,32 +200,36 @@ def convert_to_code_agent_format(messages: list[ChatMessage], json_path: str):
                 .replace("Observation: ", "")
                 .replace("Thought: ", "")
             )
-            if i == len(messages) - 1:
-                # content = (
-                #     "<code>\n" + content.strip() + "\n</code>"
-                # )
-                content = content.strip()
-            else:
+            if reasoning and i == len(messages) - 1:
+                content = (
+                    "<code>\n" + content.strip() + "\n</code>"
+                )
+            elif reasoning:
                 # TODO: Check if there is always only 2 assistants
                 content = (
                     "<think>\n"
                     + content.strip()
                     + "\n</think>\n"
                 )
+            else:
+                content = content.strip()
 
         messages[i].content = content
 
         # Fuse subsequent messages have the same role, merge it
         if i > 0 and messages[i].role == messages[i - 1].role:
             # Need to fuse both messages
-            messages[i - 1].content += messages[i].content
+            if reasoning:
+                messages[i - 1].content += messages[i].content
+            else:
+                messages[i - 1].content += "\n" + messages[i].content
             messages.pop(i)
-    
+
     return messages
 
 
 def convert_to_chat_format(
-    data: ConversationData, json_path: str
+    data: ConversationData, json_path: str, reasoning: bool
 ) -> list[ChatMessage]:
     """Convert data item to chat template format."""
     # This is a placeholder - you'll need to adapt this based on the actual data structure
@@ -246,8 +250,8 @@ def convert_to_chat_format(
     #                 with open("os_files.txt", "a") as os_files:
     #                     os_files.write(json_path + "\n")
     #                 os = True
-            
-    chat_messages = convert_to_code_agent_format(chat_messages, json_path)
+    # Aguvis stage 1     
+    chat_messages = convert_to_code_agent_format(chat_messages, json_path, reasoning)
     return chat_messages
 
 
@@ -257,48 +261,41 @@ def convert_to_new_action_space(
     regex_match: re.Match | str | None = None
     index = -1
     regex = r"<code>\n(.*?)\n</code>"
-    assistant_msg = [message for message in messages if message.role == "assistant"]
+    assistant_msg = [(i, message) for i, message in enumerate(messages) if message.role == "assistant"]
     if assistant_msg:
-        for i, msg in enumerate(assistant_msg):
+        for index, msg in assistant_msg:
 
             if code_format:
                 regex_match = re.search(regex, msg.content, re.DOTALL)
-            elif "pyautogui" in msg.content or "mobile" in msg.content or "terminate" in msg.content or "answer" in msg.content:
-                regex_match = msg.content
-                
-            index = i
-            if regex_match is not None:
-                break
-        if regex_match is not None:
-            function_calls = parse_function_call(
-                regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match,
-                pattern_to_match=["pyautogui", "mobile", "terminate", "answer"],
-            )
-
-
-            if len(function_calls) > 0:
-
-                for i, function_call in enumerate(deepcopy(function_calls)):
-                    
-                    if function_call.function_name == "pyautogui.dragTo" and not isinstance(list(function_calls[i].parameters.values())[0], (list, tuple)):
-                        x1, y1 = islice(function_calls[i-1].parameters.values(), 2)
-                        x2, y2 = islice(function_calls[i].parameters.values(), 2)
-                        function_calls[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
-                        function_calls[i].original_string = function_calls[i].to_string()
-                        function_calls.pop(i-1)
-
-                function_calls = action_conversion(function_calls, resolution=resolution)
-
-                new_action_string = "\n".join(
-                    [function_call.to_string() for function_call in function_calls]
-                )
-                assistant_msg[index].content = assistant_msg[index].content.replace(
-                    regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match, new_action_string
-                )
-                if "pyautogui" in assistant_msg[index].content:
-                    raise Exception("pyautogui in assistant_msg[index].content: " + assistant_msg[index].content)
             else:
-                print(regex_match)
+                regex_match = msg.content
+
+            if regex_match is not None:
+                function_calls = parse_function_call(
+                    regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match,
+                    pattern_to_match=["pyautogui", "mobile", "terminate", "answer"],
+                )
+
+
+                if len(function_calls) > 0:
+
+                    for i, function_call in enumerate(deepcopy(function_calls)):
+
+                        if function_call.function_name == "pyautogui.dragTo" and not isinstance(list(function_calls[i].parameters.values())[0], (list, tuple)):
+                            x1, y1 = islice(function_calls[i-1].parameters.values(), 2)
+                            x2, y2 = islice(function_calls[i].parameters.values(), 2)
+                            function_calls[i].parameters = {"from_coord": (x1, y1), "to_coord": (x2, y2)}
+                            function_calls[i].original_string = function_calls[i].to_string()
+                            function_calls.pop(i-1)
+
+                    function_calls = action_conversion(function_calls, resolution=resolution)
+
+                    new_action_string = "\n".join(
+                        [function_call.to_string() for function_call in function_calls]
+                    )
+                    messages[index].content = messages[index].content.replace(
+                        regex_match.group(1) if isinstance(regex_match, re.Match) else regex_match, new_action_string
+                    )
 
 
     return messages
@@ -331,7 +328,7 @@ def process_subset(
 
 
 def row_generator(
-    data: ConversationDataList, images_folder: Path, json_path: str
+    data: ConversationDataList, images_folder: Path, json_path: str, reasoning: bool
 ) -> Generator[Dict[str, Any], None, None]:
     conversations: list[ConversationData] = data.root
     for item in tqdm(conversations):
@@ -339,12 +336,12 @@ def row_generator(
         try:
             # Load images
             image = load_image_from_folder(images_folder, item.image)
-            chat_message = convert_to_chat_format(item, json_path)
-            chat_message = convert_to_new_action_space(chat_message, image.size, code_format=False)
+            chat_message = convert_to_chat_format(item, json_path, reasoning)
+            chat_message = convert_to_new_action_space(chat_message, image.size, code_format=reasoning)
             if len(chat_message) == 0:
                 continue
 
-            row = DataRow.from_chat_messages(chat_message, image)
+            row = DataRow.from_chat_messages(chat_message, image, source=json_path.split("/")[-1].split(".")[0])
             yield row.model_dump(exclude_none=True)
             del image
         except Exception as e:
@@ -359,9 +356,10 @@ class DatasetConfig(BaseModel):
     local_path: str
     config_dict: List[Dict[str, Any]]
     smolagents_repo_id: str
+    reasoning: bool
 
 
-def process_single_config(config: Dict[str, Any], dataset_path: str, smolagents_repo_id: str) -> bool:
+def process_single_config(config: Dict[str, Any], dataset_path: str, smolagents_repo_id: str, reasoning: bool) -> bool:
     """Process a single config in a separate process."""
     try:
         # Authenticate in this process
@@ -384,7 +382,7 @@ def process_single_config(config: Dict[str, Any], dataset_path: str, smolagents_
         # Collect all rows first
         rows = []
         datasets = []
-        for row in row_generator(data, image_folder, json_path):
+        for row in row_generator(data, image_folder, json_path, reasoning):
             rows.append(row)
             if len(rows) > 20000:
                 print("Creating batch dataset")
@@ -404,7 +402,7 @@ def process_single_config(config: Dict[str, Any], dataset_path: str, smolagents_
         # Push to hub
         dataset_to_push.push_to_hub(
             smolagents_repo_id,
-            config_name=config["subset_name"],  # This sets the subset name
+            config_name=subset_name,  # This sets the subset name
             split="train",  # This should be "train" not the subset name
         )
 
@@ -440,6 +438,7 @@ def make_dataset_from_original_data(dataset_config: DatasetConfig, max_processes
 
     dataset_configs = discover_dataset_config(dataset_path, dataset_config.config_dict)
     converted_repo_id = dataset_config.smolagents_repo_id
+    reasoning = dataset_config.reasoning
     
     # Use multiprocessing to process configs in parallel
     available_cpus = mp.cpu_count()
@@ -450,8 +449,8 @@ def make_dataset_from_original_data(dataset_config: DatasetConfig, max_processes
     
     # Prepare arguments for multiprocessing
     process_args = [
-        (config, dataset_path, converted_repo_id) 
-        for config in dataset_configs if config["subset_name"] == "ricoig16k"
+        (config, dataset_path, converted_repo_id, reasoning) 
+        for config in dataset_configs if config["subset_name"]
     ]
     
     # Process configs in parallel with progress tracking
@@ -499,13 +498,15 @@ if __name__ == "__main__":
         local_path="/fsx/amir_mahla/aguvis_raw_stage_1",
         config_dict=config_dict_stage_1,
         smolagents_repo_id="smolagents/aguvis-stage-1",
+        reasoning=False,
     )
     dataset_config_2 = DatasetConfig(
         huggingface_repo_id="xlangai/aguvis-stage2",
         local_path="/fsx/amir_mahla/aguvis_raw_stage_2",
         config_dict=config_dict_stage_2,
         smolagents_repo_id="smolagents/aguvis-stage-2",
+        reasoning=True,
     )
     # You can specify max_processes to limit the number of parallel processes
     # make_dataset_from_original_data(dataset_config_1, max_processes=4)
-    make_dataset_from_original_data(dataset_config_1, 4)
+    make_dataset_from_original_data(dataset_config_2, 3)
